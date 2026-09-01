@@ -1,0 +1,152 @@
+<div align="center">
+
+<img src="assets/icon.png" width="128" alt="Auris Whisper">
+
+# Auris Whisper
+
+**Расшифровка речи на macOS, полностью офлайн. Бросил файл или надиктовал — получил `.txt`.**
+Без интернета, без аккаунтов, без загрузки куда-либо. Всё считается на вашем чипе.
+
+[![macOS](https://img.shields.io/badge/macOS-12%2B-000000?logo=apple&logoColor=white)](#скачать)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%20→%20M4-0a84ff)](#совместимость)
+[![Лицензия](https://img.shields.io/badge/лицензия-MIT-22c55e)](LICENSE)
+[![Автор](https://img.shields.io/badge/сделано-boopi.ru-7c3aed)](https://boopi.ru)
+
+<img src="docs/screenshot-ru.png" width="720" alt="Окно Auris Whisper">
+
+</div>
+
+---
+
+## Что умеет
+
+- **Перетащить аудио или видео** — mp3, m4a, wav, aiff, caf, aac, flac, mp4, mov
+  и **ogg / oga / opus**. Можно бросить сразу несколько, обработает по очереди.
+- **Ogg и Opus открываются.** macOS не умеет их ни одним системным API, поэтому
+  внутрь вкомпилированы libopusfile и libvorbisfile. Контейнер определяется по
+  сигнатуре файла, а не по расширению, — переименованные голосовые из
+  мессенджеров тоже читаются.
+- **Диктовка** (⌘R) с индикатором уровня, затем «Остановить и расшифровать».
+  Запись сохраняется в `.wav` рядом с текстом.
+- **Десять языков распознавания** или автоопределение.
+- **Интерфейс на русском или английском**, переключатель в правом верхнем углу.
+- **Таймкоды** по галочке: `[00:12 → 00:19] фраза`.
+- **Автосохранение**: `запись.mp3` даёт `запись.txt` в той же папке.
+  Диктовки складываются в `Документы/Whisper`.
+- **Текст правится прямо в окне** до сохранения.
+- **Полоса нагрузки** внизу: процессор приложения, процессор системы, загрузка
+  видеоядра, память и имя вшитой модели. Обновляется раз в секунду.
+
+Это не обёртка над веб-сервисом: файл модели лежит внутри бандла, а вычисления
+идут через Metal на вашей видеокарте.
+
+## Скачать
+
+Возьмите `.zip` в [релизах](../../releases), распакуйте, перетащите куда
+угодно. Приложение самодостаточное: один arm64-бинарник и модель, никаких
+внешних библиотек, установщика и докачек.
+
+| Сборка | Для кого |
+|---|---|
+| `AurisWhisper-x.y.z-macOS13+.zip` | macOS 13 Ventura и новее |
+| `AurisWhisper-x.y.z-macOS12+.zip` | macOS 12 Monterey (пойдёт и на новых) |
+
+В обеих зашита модель `large-v3-turbo-q5_0` (547 МБ). GitHub не принимает файлы
+больше 2 ГБ, поэтому сборка с полной `large-v3` на 2.9 ГБ не выкладывается —
+её собирают одной командой, см. [ниже](#сборка-из-исходников).
+
+### Первый запуск
+
+Приложение подписано ad-hoc, без сертификата Apple Developer. macOS скажет, что
+не может проверить разработчика, — **правой кнопкой по приложению → Открыть →
+Открыть**, один раз. Для диктовки система один раз спросит доступ к микрофону.
+
+## Совместимость
+
+Работает на **любом Mac с Apple Silicon** — M1, M2, M3, M4 и вариантах
+Pro/Max/Ultra. Intel-маки не поддерживаются: в бинарнике только срез arm64.
+
+Важная деталь, если будете собирать сами: ggml по умолчанию использует
+`-mcpu=native`, и на M4 это добавляет инструкции SME и i8mm, которых нет у
+M1–M3, — такой бинарник падает у них с «Illegal instruction». Здесь жёстко
+задан переносимый базис:
+
+```
+-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16"
+```
+
+На скорость это не влияет: тяжёлая математика идёт на Metal, а не на этих
+инструкциях.
+
+## Модели
+
+Замер на M4, 39 секунд русской речи, с пунктуацией:
+
+| Модель | Размер | Скорость | Загрузка |
+|---|---|---|---|
+| `large-v3-turbo-q5_0` *(в релизах)* | 547 МБ | ×12.4 от реального времени | ~1 с |
+| `large-v3` | 2.9 ГБ | ×4.5 от реального времени | ~5 с |
+
+×12.4 — это час записи примерно за пять минут. На нашем тесте обе модели дали
+одинаковый текст, turbo просто легче и быстрее. Подходит любая
+[модель whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp): приложение
+берёт единственный `.bin` из своих `Resources` и показывает его имя в полосе
+нагрузки.
+
+## Сборка из исходников
+
+Нужны Xcode (или Command Line Tools), `cmake`, `git`.
+
+```bash
+git clone https://github.com/sibawal/auris-whisper.git
+cd auris-whisper
+./setup.sh          # заберёт whisper.cpp и кодеки Ogg/Opus/Vorbis, соберёт их, скачает модель
+./build.sh          # соберёт «Auris Whisper.app»
+```
+
+`setup.sh` пиннит конкретные коммиты зависимостей, поэтому сборка сегодня и
+через год дадут одно и то же. Ручки:
+
+```bash
+MODEL_NAME=ggml-large-v3 ./setup.sh                  # другая модель
+MIN_MACOS=12.0 ./build.sh                            # ниже планка macOS
+MODEL="$PWD/models/ggml-large-v3.bin" ./build.sh      # вшить эту модель
+APP_PATH="out/Auris Whisper.app" ./build.sh          # собрать в другое место
+```
+
+Xcode-проекта нет: `build.sh` напрямую зовёт `swiftc` и собирает бандл руками —
+так всё видно и скриптуется.
+
+Консольная проверка того же кода декодирования и распознавания:
+
+```bash
+./build_test.sh
+./test/whispertest models/ggml-large-v3-turbo-q5_0.bin запись.m4a ru
+```
+
+## Как устроено
+
+| Файл | Что делает |
+|---|---|
+| `src/AudioDecoder.swift` | любой контейнер → 16 кГц моно float через AVAssetReader, запасной путь через AVAudioFile |
+| `src/OggDecoder.swift` | Ogg Vorbis и Ogg Opus через libvorbisfile / libopusfile плюс потоковый ресемплер |
+| `src/WhisperEngine.swift` | тонкая обёртка над C-API whisper.cpp; контекст модели живёт между расшифровками |
+| `src/Recorder.swift` | тап AVAudioEngine сразу в 16 кГц моно |
+| `src/SystemMonitor.swift` | процессор через mach `task_info`/`host_statistics`, видеоядро через IORegistry |
+| `src/Localization.swift` | двуязычный интерфейс без `.lproj` |
+| `build.sh` | компиляция, сборка бандла, ad-hoc подпись |
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE). Пользуйтесь, меняйте, распространяйте.
+
+Внутри: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) и ggml (MIT),
+модель [Whisper](https://github.com/openai/whisper) от OpenAI (MIT),
+libogg / libvorbis / libopus / libopusfile от Xiph.Org (BSD). Полные тексты — в
+[THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
+
+<div align="center">
+
+Сделано в [boopi.ru](https://boopi.ru) · [English README](README.md)
+
+</div>

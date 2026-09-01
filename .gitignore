@@ -1,0 +1,18 @@
+# Внешние исходники и артефакты сборки — их приносит setup.sh
+whisper.cpp/
+deps/
+models/
+out/
+*.app/
+
+# Локальные файлы
+.DS_Store
+test/*.aiff
+test/*.wav
+test/*.mp3
+test/*.m4a
+test/*.ogg
+test/*.opus
+test/*.txt
+test/whispertest
+*.zip

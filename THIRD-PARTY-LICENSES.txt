@@ -1,0 +1,39 @@
+Auris Whisper использует следующие открытые компоненты.
+Все они распространяются по разрешительным лицензиям, совместимым с MIT.
+
+1. whisper.cpp и ggml — © Georgi Gerganov и участники проекта, лицензия MIT.
+   https://github.com/ggml-org/whisper.cpp
+
+2. Модель Whisper large-v3 — © OpenAI, лицензия MIT.
+   https://github.com/openai/whisper
+
+3. libogg, libvorbis, libvorbisfile — © Xiph.Org Foundation, лицензия BSD (3-clause).
+   https://gitlab.xiph.org/xiph/ogg  ·  https://gitlab.xiph.org/xiph/vorbis
+
+4. libopus, libopusfile — © Xiph.Org Foundation, Skype Limited, Octasic,
+   Jean-Marc Valin, Timothy B. Terriberry и другие; лицензия BSD (3-clause).
+   https://gitlab.xiph.org/xiph/opus  ·  https://gitlab.xiph.org/xiph/opusfile
+
+Полные тексты лицензий этих проектов доступны по указанным адресам.
+Ниже приведён типовой текст BSD-3-Clause, под которым распространяются
+компоненты Xiph.Org:
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+- Neither the name of the Xiph.Org Foundation nor the names of its
+  contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+FOUNDATION OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES HOWEVER CAUSED AND ON ANY THEORY
+OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
