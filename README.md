@@ -138,7 +138,7 @@ A console harness for the same decoding and recognition code:
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Use it, change it, ship it.
+MIT — see [LICENSE](LICENSE) ([перевод на русский](LICENSE.ru.md)). Use it, change it, ship it.
 
 Built on [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and ggml (MIT),
 the [Whisper](https://github.com/openai/whisper) model by OpenAI (MIT), and

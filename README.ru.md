@@ -138,7 +138,7 @@ Xcode-проекта нет: `build.sh` напрямую зовёт `swiftc` и 
 
 ## Лицензия
 
-MIT — см. [LICENSE](LICENSE). Пользуйтесь, меняйте, распространяйте.
+MIT — см. [LICENSE](LICENSE), [перевод на русский](LICENSE.ru.md). Пользуйтесь, меняйте, распространяйте.
 
 Внутри: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) и ggml (MIT),
 модель [Whisper](https://github.com/openai/whisper) от OpenAI (MIT),
