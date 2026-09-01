@@ -48,6 +48,16 @@ xcrun swiftc \
 
 echo "==> Кладу модель и лицензии в бандл"
 cp "$MODEL" "$APP/Contents/Resources/"
+
+# Детектор речи Silero: на вход декодеру идут только куски с речью.
+# Без него whisper на тишине и музыке срывается в повтор одной фразы.
+VAD_MODEL="${VAD_MODEL:-$ROOT/models/ggml-silero-v5.1.2.bin}"
+if [ -f "$VAD_MODEL" ]; then
+	cp "$VAD_MODEL" "$APP/Contents/Resources/"
+	echo "    + детектор речи $(basename "$VAD_MODEL")"
+else
+	echo "    !! $VAD_MODEL не найден — приложение соберётся, но без защиты от зацикливания"
+fi
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE.txt"
 cp "$ROOT/THIRD-PARTY-LICENSES.txt" "$APP/Contents/Resources/"
 

@@ -36,6 +36,13 @@ No internet, no accounts, no uploads. Everything runs on your Mac's own chip.
 - **Editable output** — fix the text in the window before saving.
 - **Load meter** at the bottom: app CPU, system CPU, GPU utilisation, memory and
   the bundled model's name, refreshed every second.
+- **Long recordings stay intact.** Whisper has a habit of getting stuck: a window
+  stops advancing and the model repeats one phrase to the end of the file, losing
+  everything after it. Three defences are wired in — Silero voice-activity
+  detection, splitting long audio into ~5-minute pieces cut at the quietest spot
+  so a derailed piece cannot poison the rest, and a re-run of any piece that does
+  derail. On a 46-minute recording that used to die at 8:01 with one sentence
+  repeated 1629 times, the transcript now runs to 46:07.
 
 Nothing is a wrapper around a web service. The model file lives inside the app
 bundle and the inference runs on Metal, on your GPU.

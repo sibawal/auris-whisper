@@ -35,7 +35,8 @@ final class WhisperEngine {
 
     /// Единственный .bin в Resources — какую модель положили при сборке, ту и берём.
     static func bundledModelPath() -> String? {
-        (Bundle.main.urls(forResourcesWithExtension: "bin", subdirectory: nil) ?? []).first?.path
+        (Bundle.main.urls(forResourcesWithExtension: "bin", subdirectory: nil) ?? [])
+            .first { !$0.lastPathComponent.hasPrefix("ggml-silero") }?.path
     }
 
     /// Короткое имя модели для интерфейса, например «large-v3».
@@ -49,6 +50,19 @@ final class WhisperEngine {
     private let overridePath: String?
 
     init(modelPath: String? = nil) { self.overridePath = modelPath }
+
+    static let vadModelName = "ggml-silero-v5.1.2"
+
+    /// Модель детектора речи: в бандле или рядом с основной моделью.
+    private func vadModelPath() -> String? {
+        if let p = Bundle.main.path(forResource: Self.vadModelName, ofType: "bin") { return p }
+        if let base = overridePath {
+            let side = URL(fileURLWithPath: base).deletingLastPathComponent()
+                .appendingPathComponent(Self.vadModelName + ".bin")
+            if FileManager.default.fileExists(atPath: side.path) { return side.path }
+        }
+        return nil
+    }
 
     var isLoaded: Bool { ctx != nil }
 
@@ -78,9 +92,104 @@ final class WhisperEngine {
 
     // MARK: - Распознавание
 
+    /// Публичный вход: режет длинное аудио на куски и склеивает результат.
+    ///
+    /// Whisper иногда застревает: окно перестаёт двигаться вперёд, и модель до конца
+    /// файла повторяет одну фразу. Внутри одного вызова из этого не выбраться, поэтому
+    /// длинную запись обрабатываем частями — срыв портит максимум один кусок,
+    /// а следующий стартует с чистого листа.
     func transcribe(samples: [Float],
-                    language: String?,          // nil / "auto" → автоопределение
+                    language: String?,
                     onProgress: @escaping (Double) -> Void) throws -> [Segment] {
+
+        let rate = Int(WHISPER_SAMPLE_RATE)
+        let chunkTarget = 5 * 60 * rate          // куски примерно по 5 минут
+        guard samples.count > chunkTarget + 60 * rate else {
+            return try transcribeChunk(samples: samples, language: language, onProgress: onProgress)
+        }
+
+        let bounds = Self.chunkBounds(samples, target: chunkTarget, rate: rate)
+        var out: [Segment] = []
+        var derailed = 0
+
+        for (index, range) in bounds.enumerated() {
+            let offset = Double(range.lowerBound) / Double(rate)
+            let piece = Array(samples[range])
+            let base = Double(index) / Double(bounds.count)
+            let span = 1.0 / Double(bounds.count)
+
+            var segments = try transcribeChunk(samples: piece, language: language) { p in
+                onProgress(base + p * span)
+            }
+
+            // Кусок сорвался в повтор — пробуем ещё раз, с другой температурой.
+            if Self.longestRepeatRun(segments) >= 5 {
+                derailed += 1
+                let retry = try? transcribeChunk(samples: piece, language: language,
+                                                 temperature: 0.4) { p in onProgress(base + p * span) }
+                if let retry, Self.longestRepeatRun(retry) < Self.longestRepeatRun(segments) {
+                    segments = retry
+                }
+            }
+
+            out.append(contentsOf: segments.map {
+                Segment(start: $0.start + offset, end: $0.end + offset, text: $0.text)
+            })
+        }
+        lastDerailedChunks = derailed
+        return Self.collapseRepeats(out)
+    }
+
+    /// Сколько кусков сорвалось в повтор в последнем прогоне (для строки состояния).
+    private(set) var lastDerailedChunks = 0
+
+    /// Границы кусков: режем по самому тихому месту рядом с целевой точкой,
+    /// чтобы не разорвать слово.
+    static func chunkBounds(_ samples: [Float], target: Int, rate: Int) -> [Range<Int>] {
+        var bounds: [Range<Int>] = []
+        var start = 0
+        let search = 15 * rate                  // ищем тишину в ±15 с от точки реза
+        let frame = rate / 10                   // окно 100 мс
+
+        while start < samples.count {
+            let nominal = start + target
+            if nominal >= samples.count - 30 * rate {
+                bounds.append(start..<samples.count)
+                break
+            }
+            var bestCut = nominal
+            var bestEnergy = Float.greatestFiniteMagnitude
+            var i = max(start + rate, nominal - search)
+            let upper = min(samples.count - frame, nominal + search)
+            while i < upper {
+                var sum: Float = 0
+                var j = i
+                while j < i + frame { sum += abs(samples[j]); j += 8 }
+                if sum < bestEnergy { bestEnergy = sum; bestCut = i + frame / 2 }
+                i += frame
+            }
+            bounds.append(start..<bestCut)
+            start = bestCut
+        }
+        return bounds
+    }
+
+    /// Длина самой длинной цепочки одинаковых подряд идущих сегментов.
+    static func longestRepeatRun(_ segments: [Segment]) -> Int {
+        var best = 0, run = 0, prev = ""
+        for s in segments {
+            let key = s.text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            run = (key == prev) ? run + 1 : 1
+            prev = key
+            best = max(best, run)
+        }
+        return best
+    }
+
+    private func transcribeChunk(samples: [Float],
+                                 language: String?,
+                                 temperature: Float = 0,
+                                 onProgress: @escaping (Double) -> Void) throws -> [Segment] {
 
         try loadIfNeeded()
         guard let ctx else { throw EngineError.modelLoadFailed }
@@ -97,8 +206,11 @@ final class WhisperEngine {
         params.translate        = false
         params.no_timestamps    = false
         params.suppress_blank   = true
+        params.suppress_nst     = true      // глушим «неречевые» токены — меньше мусора и петель
+        params.no_context       = true      // не тащить прошлый текст вперёд: иначе петля кормит сама себя
+        params.temperature      = temperature
         params.temperature_inc  = 0.2       // фолбэк при плохой уверенности
-        params.entropy_thold    = 2.4
+        params.entropy_thold    = 2.4       // сорвался в повтор → перевыбор с другой температурой
         params.logprob_thold    = -1.0
         params.no_speech_thold  = 0.6
 
@@ -118,17 +230,33 @@ final class WhisperEngine {
             return engine.cancelRequested
         }
 
-        var status: Int32 = 0
+        // Детектор речи (Silero): на вход декодеру идут только куски с речью.
+        // Тишина, музыка и шум — главный источник галлюцинаций и зацикливания.
+        var vadPathC: UnsafeMutablePointer<CChar>?
+        if let vad = vadModelPath() {
+            vadPathC = strdup(vad)
+            params.vad = true
+            params.vad_model_path = UnsafePointer(vadPathC)
+            params.vad_params.threshold               = 0.5
+            params.vad_params.min_speech_duration_ms  = 250
+            params.vad_params.min_silence_duration_ms = 300
+            params.vad_params.max_speech_duration_s   = 30
+            params.vad_params.speech_pad_ms           = 200
+            params.vad_params.samples_overlap         = 0.2
+        }
+
+        var langC: UnsafeMutablePointer<CChar>?
         if let language, language != "auto" {
-            language.withCString { lang in
-                params.language = lang
-                status = whisper_full(ctx, params, samples, Int32(samples.count))
-            }
+            langC = strdup(language)
+            params.language = UnsafePointer(langC)
         } else {
             params.language = nil
             params.detect_language = false      // whisper сам определит язык на лету
-            status = whisper_full(ctx, params, samples, Int32(samples.count))
         }
+
+        let status = whisper_full(ctx, params, samples, Int32(samples.count))
+        if let langC { free(langC) }
+        if let vadPathC { free(vadPathC) }
 
         progressHandler = nil
         if cancelRequested { throw EngineError.cancelled }
@@ -145,6 +273,33 @@ final class WhisperEngine {
             result.append(Segment(start: t0, end: t1, text: text))
         }
         return result
+    }
+
+    /// Whisper иногда срывается в петлю и повторяет одну фразу десятки раз.
+    /// VAD и фолбэк по температуре гасят почти всё, это последний рубеж:
+    /// три и больше одинаковых подряд — оставляем одну.
+    static func collapseRepeats(_ segments: [Segment], limit: Int = 3) -> [Segment] {
+        var out: [Segment] = []
+        var runText = ""
+        var runCount = 0
+
+        func flush(_ pending: [Segment]) {
+            guard !pending.isEmpty else { return }
+            out.append(contentsOf: runCount >= limit ? [pending[0]] : pending)
+        }
+
+        var run: [Segment] = []
+        for seg in segments {
+            let key = seg.text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if key == runText {
+                run.append(seg); runCount += 1
+            } else {
+                flush(run)
+                run = [seg]; runText = key; runCount = 1
+            }
+        }
+        flush(run)
+        return out
     }
 
     /// Язык, который whisper определил сам (после прогона).

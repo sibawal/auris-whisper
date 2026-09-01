@@ -57,6 +57,12 @@ if [ ! -f "$ROOT/models/${MODEL_NAME}.bin" ]; then
   curl -L --fail --progress-bar -o "$ROOT/models/${MODEL_NAME}.bin" "$MODEL_URL"
 fi
 
+echo "==> Скачиваю модель детектора речи Silero (864 КБ)"
+if [ ! -f "$ROOT/models/ggml-silero-v5.1.2.bin" ]; then
+  curl -L --fail --progress-bar -o "$ROOT/models/ggml-silero-v5.1.2.bin" \
+    https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+fi
+
 echo
 echo "Готово. Дальше:"
 echo "  MODEL=\"\$PWD/models/${MODEL_NAME}.bin\" ./build.sh"
