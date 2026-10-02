@@ -110,11 +110,12 @@ jobs:
         shell: bash
         working-directory: src-tauri
         run: |
-          cargo build --release --example transcribe --target ${{ matrix.target }}
+          set -o pipefail
+          cargo build --release --example transcribe --target ${{ matrix.target }} 2>&1 | tee -a ../ci.log
           BIN=target/${{ matrix.target }}/release/examples/transcribe
           for f in ../tests/audio/ru_speech.m4a ../tests/audio/ru_voice_message.ogg; do
             echo "::group::$f"
-            "$BIN" ../test-model/ggml-tiny.bin "$f" ru | tee out.txt
+            "$BIN" ../test-model/ggml-tiny.bin "$f" ru 2>&1 | tee out.txt | tee -a ../ci.log
             echo "::endgroup::"
             grep -q "роверк" out.txt || { echo "::error::no expected text for $f"; exit 1; }
           done
@@ -123,7 +124,9 @@ jobs:
 
       - name: Build app
         shell: bash
-        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        run: |
+          set -o pipefail
+          npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} 2>&1 | tee -a ci.log
 
       - name: Collect installers
         shell: bash
@@ -141,6 +144,18 @@ jobs:
               cp "$B"/deb/*.deb "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.deb" ;;
           esac
           ls -la dist
+
+      # Логи Actions без входа в GitHub не читаются, а аннотации — да.
+      # Поэтому при падении выносим суть ошибки в аннотации.
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          [ -f ci.log ] || exit 0
+          enc() { sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-60000; }
+          errs=$(grep -E "error(\[E[0-9]+\])?:|error:|Error:|FAILED|fatal|LNK[0-9]{4}|undefined reference|cannot find|not found|panicked" ci.log | grep -v "^warning" | tail -n 60 | enc)
+          echo "::error title=Errors (${{ matrix.slug }})::${errs}"
+          echo "::error title=Log tail (${{ matrix.slug }})::$(tail -n 60 ci.log | enc)"
 
       - uses: actions/upload-artifact@v4
         with:
