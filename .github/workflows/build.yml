@@ -93,6 +93,9 @@ jobs:
         run: |
           choco install ninja -y --no-progress
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+          # Пути внутри сборки whisper.cpp (вложенный проект шейдеров Vulkan) не
+          # влезают в 260 символов Windows, если собирать в D:\a\…\src-tauri\target.
+          echo "CARGO_TARGET_DIR=C:/t" >> "$GITHUB_ENV"
           # В Git Bash есть свой /usr/bin/link (unix-утилита) — он перекрывает
           # линкер MSVC, и Rust с CMake пытаются линковать им. Убираем с пути.
           mv "/c/Program Files/Git/usr/bin/link.exe" "/c/Program Files/Git/usr/bin/link.exe.unix" || true
@@ -130,7 +133,7 @@ jobs:
         run: |
           set -o pipefail
           cargo build --release --example transcribe --target ${{ matrix.target }} 2>&1 | tee -a ../ci.log
-          BIN=target/${{ matrix.target }}/release/examples/transcribe
+          BIN=${CARGO_TARGET_DIR:-target}/${{ matrix.target }}/release/examples/transcribe
           for f in ../tests/audio/ru_speech.m4a ../tests/audio/ru_voice_message.ogg; do
             echo "::group::$f"
             "$BIN" ../test-model/ggml-tiny.bin "$f" ru 2>&1 | tee out.txt | tee -a ../ci.log
@@ -150,7 +153,7 @@ jobs:
         shell: bash
         run: |
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          B=src-tauri/target/${{ matrix.target }}/release/bundle
+          B=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/bundle
           mkdir -p dist
           case "${{ runner.os }}" in
             macOS)
