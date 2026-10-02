@@ -1,0 +1,456 @@
+//! Обёртка над whisper.cpp. Контекст модели живёт, пока не сменят модель,
+//! поэтому вторая и последующие расшифровки стартуют мгновенно.
+
+use std::ffi::c_void;
+use std::os::raw::c_int;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use serde::Serialize;
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState, WhisperSysContext,
+    WhisperSysState, WhisperVadParams,
+};
+
+use crate::audio::SAMPLE_RATE;
+use crate::i18n::tr;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Segment {
+    pub start: f64, // секунды
+    pub end: f64,
+    pub text: String,
+}
+
+/// Чем считаем: показываем в полосе нагрузки.
+pub fn gpu_backend_name() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "Metal"
+    } else if cfg!(any(target_os = "windows", target_os = "linux")) {
+        "Vulkan"
+    } else {
+        "CPU"
+    }
+}
+
+/// Видеокарты, которые видит ggml (Metal, Vulkan). Опрашиваем через реестр
+/// бэкендов: он ловит ошибки инициализации Vulkan, и на машине без драйвера
+/// мы просто получим пустой список, а не падение.
+pub fn gpu_devices() -> Vec<String> {
+    use whisper_rs::whisper_rs_sys as sys;
+    let mut out = Vec::new();
+    unsafe {
+        for i in 0..sys::ggml_backend_dev_count() {
+            let dev = sys::ggml_backend_dev_get(i);
+            if dev.is_null() {
+                continue;
+            }
+            let kind = sys::ggml_backend_dev_type(dev);
+            if kind == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU
+                || kind == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU
+            {
+                let desc = sys::ggml_backend_dev_description(dev);
+                if !desc.is_null() {
+                    out.push(std::ffi::CStr::from_ptr(desc).to_string_lossy().trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Есть ли вообще чем ускоряться.
+pub fn gpu_available() -> bool {
+    !gpu_devices().is_empty()
+}
+
+struct Loaded {
+    path: PathBuf,
+    use_gpu: bool,
+    on_gpu: bool,
+    // Порядок важен: состояние ссылается на контекст и должно умереть раньше.
+    state: WhisperState,
+    _ctx: WhisperContext,
+}
+
+pub struct Engine {
+    loaded: Option<Loaded>,
+    vad_model: Option<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    last_lang: Option<String>,
+}
+
+/// Данные для колбэков whisper.cpp: живут на стеке на время одного прогона.
+struct CallbackData<'a> {
+    cancel: &'a AtomicBool,
+    progress: &'a mut dyn FnMut(f64),
+}
+
+unsafe extern "C" fn progress_trampoline(
+    _: *mut WhisperSysContext,
+    _: *mut WhisperSysState,
+    progress: c_int,
+    user_data: *mut c_void,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let data = &mut *(user_data as *mut CallbackData);
+    (data.progress)(progress as f64 / 100.0);
+}
+
+unsafe extern "C" fn abort_trampoline(user_data: *mut c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    let data = &*(user_data as *const CallbackData);
+    data.cancel.load(Ordering::Relaxed)
+}
+
+pub enum EngineError {
+    Cancelled,
+    Failed(String),
+}
+
+impl EngineError {
+    pub fn message(&self) -> String {
+        match self {
+            EngineError::Cancelled => tr("Отменено.", "Cancelled."),
+            EngineError::Failed(m) => m.clone(),
+        }
+    }
+}
+
+impl Engine {
+    pub fn new(vad_model: Option<PathBuf>, cancel: Arc<AtomicBool>) -> Self {
+        Self { loaded: None, vad_model, cancel, last_lang: None }
+    }
+
+    pub fn is_loaded_with(&self, path: &Path, use_gpu: bool) -> bool {
+        matches!(&self.loaded, Some(l) if l.path == path && l.use_gpu == use_gpu)
+    }
+
+    /// Считает ли загруженная модель на видеокарте.
+    pub fn on_gpu(&self) -> Option<bool> {
+        self.loaded.as_ref().map(|l| l.on_gpu)
+    }
+
+    pub fn unload(&mut self) {
+        self.loaded = None;
+    }
+
+    pub fn detected_language(&self) -> Option<String> {
+        self.last_lang.clone()
+    }
+
+    /// Загружает модель. Если видеокарта не поднялась — тихо уходим на процессор.
+    pub fn load(&mut self, path: &Path, use_gpu: bool) -> Result<(), EngineError> {
+        if self.is_loaded_with(path, use_gpu) {
+            return Ok(());
+        }
+        self.loaded = None;
+
+        let path_str = path.to_str().ok_or_else(|| EngineError::Failed("bad model path".into()))?;
+        let try_load = |gpu: bool| -> Option<(WhisperContext, WhisperState)> {
+            let mut cp = WhisperContextParameters::default();
+            cp.use_gpu(gpu);
+            cp.flash_attn(true);
+            let ctx = WhisperContext::new_with_params(path_str, cp).ok()?;
+            let state = ctx.create_state().ok()?;
+            Some((ctx, state))
+        };
+
+        let (ctx, state, on_gpu) = match use_gpu.then(|| try_load(true)).flatten() {
+            Some((c, s)) => (c, s, gpu_available()),
+            None => match try_load(false) {
+                Some((c, s)) => (c, s, false),
+                None => {
+                    return Err(EngineError::Failed(tr(
+                        "Не удалось загрузить модель. Возможно, файл повреждён — удалите и скачайте её заново.",
+                        "Could not load the model. The file may be damaged — delete it and download again.",
+                    )))
+                }
+            },
+        };
+        self.loaded = Some(Loaded { path: path.to_path_buf(), use_gpu, on_gpu, state, _ctx: ctx });
+        Ok(())
+    }
+
+    /// Публичный вход: режет длинное аудио на куски и склеивает результат.
+    ///
+    /// Whisper иногда застревает: окно перестаёт двигаться вперёд, и модель до конца
+    /// файла повторяет одну фразу. Внутри одного вызова из этого не выбраться, поэтому
+    /// длинную запись обрабатываем частями — срыв портит максимум один кусок,
+    /// а следующий стартует с чистого листа.
+    pub fn transcribe(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+        on_progress: &mut dyn FnMut(f64),
+    ) -> Result<Vec<Segment>, EngineError> {
+        self.last_lang = None;
+
+        let rate = SAMPLE_RATE as usize;
+        let chunk_target = 5 * 60 * rate; // куски примерно по 5 минут
+        if samples.len() <= chunk_target + 60 * rate {
+            return self.transcribe_chunk(samples, language, 0.0, on_progress);
+        }
+
+        let bounds = chunk_bounds(samples, chunk_target, rate);
+        let n = bounds.len() as f64;
+        let mut out = Vec::new();
+
+        for (index, range) in bounds.iter().enumerate() {
+            let offset = range.start as f64 / rate as f64;
+            let piece = &samples[range.clone()];
+            let base = index as f64 / n;
+            let span = 1.0 / n;
+            let mut sub = |p: f64| on_progress(base + p * span);
+
+            let mut segments = self.transcribe_chunk(piece, language, 0.0, &mut sub)?;
+
+            // Кусок сорвался в повтор — пробуем ещё раз, с другой температурой.
+            if longest_repeat_run(&segments) >= 5 {
+                if let Ok(retry) = self.transcribe_chunk(piece, language, 0.4, &mut sub) {
+                    if longest_repeat_run(&retry) < longest_repeat_run(&segments) {
+                        segments = retry;
+                    }
+                }
+            }
+
+            out.extend(segments.into_iter().map(|s| Segment { start: s.start + offset, end: s.end + offset, text: s.text }));
+        }
+        Ok(collapse_repeats(out, 3))
+    }
+
+    fn transcribe_chunk(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+        temperature: f32,
+        on_progress: &mut dyn FnMut(f64),
+    ) -> Result<Vec<Segment>, EngineError> {
+        let loaded = self.loaded.as_mut().ok_or_else(|| EngineError::Failed("model is not loaded".into()))?;
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        params.set_n_threads(threads.saturating_sub(1).clamp(2, 8) as c_int);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_print_special(false);
+        params.set_translate(false);
+        params.set_no_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true); // глушим «неречевые» токены — меньше мусора и петель
+        params.set_no_context(true); // не тащить прошлый текст вперёд: иначе петля кормит сама себя
+        params.set_temperature(temperature);
+        params.set_temperature_inc(0.2); // фолбэк при плохой уверенности
+        params.set_entropy_thold(2.4); // сорвался в повтор → перевыбор с другой температурой
+        params.set_logprob_thold(-1.0);
+        params.set_no_speech_thold(0.6);
+
+        match language {
+            Some(lang) if lang != "auto" => params.set_language(Some(lang)),
+            _ => {
+                params.set_language(None); // whisper сам определит язык на лету
+                params.set_detect_language(false);
+            }
+        }
+
+        // Детектор речи (Silero): на вход декодеру идут только куски с речью.
+        // Тишина, музыка и шум — главный источник галлюцинаций и зацикливания.
+        let vad_path = self.vad_model.as_ref().and_then(|p| p.to_str().map(str::to_owned));
+        if let Some(vad) = vad_path.as_deref() {
+            params.set_vad_model_path(Some(vad));
+            let mut vp = WhisperVadParams::new();
+            vp.set_threshold(0.5);
+            vp.set_min_speech_duration(250);
+            vp.set_min_silence_duration(300);
+            vp.set_max_speech_duration(30.0);
+            vp.set_speech_pad(200);
+            vp.set_samples_overlap(0.2);
+            params.set_vad_params(vp);
+            params.enable_vad(true);
+        }
+
+        let mut data = CallbackData { cancel: &self.cancel, progress: on_progress };
+        let data_ptr = &mut data as *mut CallbackData as *mut c_void;
+        unsafe {
+            params.set_progress_callback(Some(progress_trampoline));
+            params.set_progress_callback_user_data(data_ptr);
+            params.set_abort_callback(Some(abort_trampoline));
+            params.set_abort_callback_user_data(data_ptr);
+        }
+
+        let result = loaded.state.full(params, samples);
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(EngineError::Cancelled);
+        }
+        result.map_err(|e| EngineError::Failed(tr("Ошибка распознавания: ", "Transcription failed: ") + &e.to_string()))?;
+
+        let state = &loaded.state;
+        let lang_id = state.full_lang_id_from_state();
+        if lang_id >= 0 {
+            self.last_lang = whisper_rs::get_lang_str(lang_id).map(str::to_owned);
+        }
+
+        let mut out = Vec::new();
+        for seg in state.as_iter() {
+            let text = seg.to_str_lossy().map(|s| s.trim().to_string()).unwrap_or_default();
+            if text.is_empty() {
+                continue;
+            }
+            out.push(Segment {
+                start: seg.start_timestamp() as f64 / 100.0,
+                end: seg.end_timestamp() as f64 / 100.0,
+                text,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Границы кусков: режем по самому тихому месту рядом с целевой точкой,
+/// чтобы не разорвать слово.
+pub fn chunk_bounds(samples: &[f32], target: usize, rate: usize) -> Vec<std::ops::Range<usize>> {
+    let mut bounds = Vec::new();
+    let mut start = 0;
+    let search = 15 * rate; // ищем тишину в ±15 с от точки реза
+    let frame = rate / 10; // окно 100 мс
+
+    while start < samples.len() {
+        let nominal = start + target;
+        if nominal + 30 * rate >= samples.len() {
+            bounds.push(start..samples.len());
+            break;
+        }
+        let mut best_cut = nominal;
+        let mut best_energy = f32::MAX;
+        let mut i = (start + rate).max(nominal.saturating_sub(search));
+        let upper = (samples.len() - frame).min(nominal + search);
+        while i < upper {
+            let sum: f32 = samples[i..i + frame].iter().step_by(8).map(|v| v.abs()).sum();
+            if sum < best_energy {
+                best_energy = sum;
+                best_cut = i + frame / 2;
+            }
+            i += frame;
+        }
+        bounds.push(start..best_cut);
+        start = best_cut;
+    }
+    bounds
+}
+
+fn norm(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+/// Длина самой длинной цепочки одинаковых подряд идущих сегментов.
+pub fn longest_repeat_run(segments: &[Segment]) -> usize {
+    let (mut best, mut run) = (0, 0);
+    let mut prev = String::new();
+    for s in segments {
+        let key = norm(&s.text);
+        run = if key == prev { run + 1 } else { 1 };
+        prev = key;
+        best = best.max(run);
+    }
+    best
+}
+
+/// Whisper иногда срывается в петлю и повторяет одну фразу десятки раз.
+/// VAD и фолбэк по температуре гасят почти всё, это последний рубеж:
+/// `limit` и больше одинаковых подряд — оставляем одну.
+pub fn collapse_repeats(segments: Vec<Segment>, limit: usize) -> Vec<Segment> {
+    let mut out = Vec::with_capacity(segments.len());
+    let mut run: Vec<Segment> = Vec::new();
+    let mut run_key = String::new();
+
+    let flush = |run: &mut Vec<Segment>, out: &mut Vec<Segment>| {
+        if run.len() >= limit {
+            out.push(run[0].clone());
+        } else {
+            out.append(run);
+        }
+        run.clear();
+    };
+
+    for seg in segments {
+        let key = norm(&seg.text);
+        if !run.is_empty() && key == run_key {
+            run.push(seg);
+        } else {
+            flush(&mut run, &mut out);
+            run_key = key;
+            run.push(seg);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
+// MARK: - Форматирование результата
+
+pub fn timecode(seconds: f64) -> String {
+    let total = seconds.max(0.0).floor() as u64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
+pub fn plain_text(segments: &[Segment]) -> String {
+    segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ").replace("  ", " ")
+}
+
+pub fn timestamped_text(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .map(|s| format!("[{} → {}]  {}", timecode(s.start), timecode(s.end), s.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(t: &str) -> Segment {
+        Segment { start: 0.0, end: 1.0, text: t.into() }
+    }
+
+    #[test]
+    fn collapses_long_runs_only() {
+        let s = vec![seg("a"), seg("b"), seg("b"), seg("c"), seg("c"), seg("c"), seg("c"), seg("d")];
+        let out: Vec<_> = collapse_repeats(s, 3).into_iter().map(|s| s.text).collect();
+        assert_eq!(out, ["a", "b", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn repeat_run() {
+        assert_eq!(longest_repeat_run(&[seg("x"), seg("X "), seg("y")]), 2);
+    }
+
+    #[test]
+    fn chunks_cover_everything() {
+        let rate = 100;
+        let samples = vec![0.1f32; rate * 60 * 23];
+        let b = chunk_bounds(&samples, 5 * 60 * rate, rate);
+        assert_eq!(b.first().unwrap().start, 0);
+        assert_eq!(b.last().unwrap().end, samples.len());
+        for w in b.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+        }
+    }
+
+    #[test]
+    fn timecodes() {
+        assert_eq!(timecode(75.9), "01:15");
+        assert_eq!(timecode(3725.0), "01:02:05");
+    }
+}

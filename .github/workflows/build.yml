@@ -1,0 +1,170 @@
+name: Build
+
+# Сборка под четыре платформы. На тег v* — ещё и черновик релиза с установщиками.
+on:
+  push:
+    branches: [main, v2-crossplatform]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Модель для смоук-теста: самая маленькая, 74 МБ
+  TEST_MODEL_URL: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-14
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            slug: macOS-AppleSilicon
+          - name: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            slug: macOS-Intel
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            slug: Windows-x64
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+            slug: Linux-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      # ---------- Системные зависимости ----------
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf libasound2-dev libclang-dev libvulkan-dev file
+
+      - name: Vulkan SDK
+        if: runner.os != 'macOS'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Windows runtime DLLs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-runtime.ps1
+
+      - name: LLVM for bindgen (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      # ---------- Смоук-тест: тот же декодер и движок, что в приложении ----------
+
+      - name: Cache test model
+        uses: actions/cache@v4
+        with:
+          path: test-model
+          key: ggml-tiny-v1
+
+      - name: Download test model
+        shell: bash
+        run: |
+          mkdir -p test-model
+          [ -f test-model/ggml-tiny.bin ] || curl -L --fail -o test-model/ggml-tiny.bin "$TEST_MODEL_URL"
+
+      - name: Smoke test (decode + transcribe)
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          cargo build --release --example transcribe --target ${{ matrix.target }}
+          BIN=target/${{ matrix.target }}/release/examples/transcribe
+          for f in ../tests/audio/ru_speech.m4a ../tests/audio/ru_voice_message.ogg; do
+            echo "::group::$f"
+            "$BIN" ../test-model/ggml-tiny.bin "$f" ru | tee out.txt
+            echo "::endgroup::"
+            grep -q "роверк" out.txt || { echo "::error::no expected text for $f"; exit 1; }
+          done
+
+      # ---------- Сборка установщика ----------
+
+      - name: Build app
+        shell: bash
+        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          B=src-tauri/target/${{ matrix.target }}/release/bundle
+          mkdir -p dist
+          case "${{ runner.os }}" in
+            macOS)
+              cp "$B"/dmg/*.dmg "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.dmg" ;;
+            Windows)
+              cp "$B"/nsis/*-setup.exe "dist/AurisWhisper-$VERSION-${{ matrix.slug }}-Setup.exe" ;;
+            Linux)
+              cp "$B"/appimage/*.AppImage "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.AppImage"
+              cp "$B"/deb/*.deb "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.deb" ;;
+          esac
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AurisWhisper-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*

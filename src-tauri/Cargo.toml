@@ -1,0 +1,77 @@
+[package]
+name = "auris-whisper"
+version = "2.0.0"
+description = "Offline speech-to-text: drop a file or dictate, get clean text"
+authors = ["boopi.ru"]
+license = "MIT"
+repository = "https://github.com/sibawal/auris-whisper"
+edition = "2021"
+rust-version = "1.88"
+default-run = "auris-whisper"
+
+[lib]
+name = "auris_whisper_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "auris-whisper"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Движок распознавания: whisper.cpp
+whisper-rs = { version = "0.16", features = ["raw-api"] }
+
+# Декодирование аудио/видео: mp3, aac/m4a, mp4/mov, flac, wav, aiff, caf, ogg/vorbis, mkv/webm
+symphonia = { version = "0.6", features = ["all", "opt-simd"] }
+# Opus (голосовые из мессенджеров) — symphonia его не декодирует
+opusic-sys = "0.7"
+rubato = "0.16"
+
+# Запись с микрофона: CoreAudio / WASAPI / ALSA
+cpal = "0.18"
+
+# Скачивание моделей
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
+sha2 = "0.10"
+
+# Полоса нагрузки
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
+# Apple Silicon: считаем на Metal
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = "0.8"
+io-kit-sys = "0.4"
+libc = "0.2"
+
+# Windows и Linux: Vulkan — работает на видеокартах NVIDIA, AMD и Intel
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["vulkan"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Performance",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = true
+panic = "unwind"

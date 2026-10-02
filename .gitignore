@@ -1,18 +1,17 @@
-# Внешние исходники и артефакты сборки — их приносит setup.sh
-whisper.cpp/
-deps/
-models/
-out/
-*.app/
+# Сборка
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+dist/
 
-# Локальные файлы
+# DLL для Windows-установщика: их кладёт scripts/windows-runtime.ps1
+src-tauri/windows-runtime/
+
+# Модели не храним в репозитории — приложение скачивает их само
+*.bin
+!src-tauri/resources/ggml-silero-v5.1.2.bin
+test-model/
+
+# Локальное
 .DS_Store
-test/*.aiff
-test/*.wav
-test/*.mp3
-test/*.m4a
-test/*.ogg
-test/*.opus
-test/*.txt
-test/whispertest
 *.zip

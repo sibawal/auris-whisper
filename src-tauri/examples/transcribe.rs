@@ -1,0 +1,62 @@
+//! Консольная проверка: тот же декодер и движок, что и в приложении.
+//!
+//!   cargo run --release --example transcribe -- <модель.bin> <аудиофайл> [язык] [--cpu]
+//!
+//! Детектор речи берётся из src-tauri/resources.
+
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Instant;
+
+use auris_whisper_lib::{audio, engine};
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 3 {
+        eprintln!("использование: transcribe <модель.bin> <аудиофайл> [язык] [--cpu]");
+        std::process::exit(2);
+    }
+    whisper_rs::install_logging_hooks();
+    let use_gpu = !args.iter().any(|a| a == "--cpu");
+    let lang = args.get(3).filter(|a| !a.starts_with("--")).cloned();
+
+    let t0 = Instant::now();
+    let samples = match audio::decode_file(Path::new(&args[2])) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("ОШИБКА декодирования: {e}");
+            std::process::exit(1);
+        }
+    };
+    let secs = samples.len() as f64 / audio::SAMPLE_RATE as f64;
+    println!("декодировано: {} отсчётов = {secs:.2} c за {:.2} c", samples.len(), t0.elapsed().as_secs_f64());
+
+    let vad = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/ggml-silero-v5.1.2.bin");
+    let mut eng = engine::Engine::new(Some(vad), Arc::new(AtomicBool::new(false)));
+    let t1 = Instant::now();
+    if let Err(e) = eng.load(Path::new(&args[1]), use_gpu) {
+        println!("ОШИБКА загрузки модели: {}", e.message());
+        std::process::exit(1);
+    }
+    println!(
+        "модель загружена за {:.2} c, видеокарта: {} ({:?})",
+        t1.elapsed().as_secs_f64(),
+        if eng.on_gpu() == Some(true) { engine::gpu_backend_name() } else { "нет, CPU" },
+        engine::gpu_devices()
+    );
+
+    let t2 = Instant::now();
+    let segs = match eng.transcribe(&samples, lang.as_deref(), &mut |_| {}) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("ОШИБКА: {}", e.message());
+            std::process::exit(1);
+        }
+    };
+    let el = t2.elapsed().as_secs_f64();
+    println!("распознано за {el:.2} c (×{:.1} от реального времени)", secs / el);
+    println!("язык: {}", eng.detected_language().unwrap_or_else(|| "?".into()));
+    println!("--- с таймкодами ---\n{}", engine::timestamped_text(&segs));
+    println!("--- сплошным текстом ---\n{}", engine::plain_text(&segs));
+}

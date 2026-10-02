@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auris Whisper</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app" id="app">
+
+    <!-- Настройки -->
+    <header class="toolbar">
+      <label class="field">
+        <span data-t="language">Язык</span>
+        <select id="language"></select>
+      </label>
+
+      <button class="chip" id="modelChip" type="button" data-t-title="modelsTitle">
+        <svg class="ico" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+        <span id="modelChipText">—</span>
+        <svg class="ico caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+
+      <div class="spacer"></div>
+
+      <label class="check" data-t-title="timestampsHint">
+        <input type="checkbox" id="timestamps"><span data-t="timestamps">Таймкоды</span>
+      </label>
+      <label class="check" data-t-title="autoSaveHint">
+        <input type="checkbox" id="autoSave"><span data-t="autoSave">Сохранять .txt рядом</span>
+      </label>
+
+      <div class="segmented" id="uiLang" data-t-title="uiLangHint">
+        <button type="button" data-lang="ru">Рус</button>
+        <button type="button" data-lang="en">Eng</button>
+      </div>
+    </header>
+
+    <!-- Зона перетаскивания / запись -->
+    <section class="drop" id="drop">
+      <div class="drop-idle" id="dropIdle">
+        <svg class="wave" viewBox="0 0 48 32"><path d="M4 13v6M10 9v14M16 4v24M22 10v12M28 6v20M34 11v10M40 8v16M46 14v4"/></svg>
+        <p class="muted" data-t="dropHere">Перетащите сюда аудио или видео</p>
+        <div class="row">
+          <button class="btn" id="openBtn" type="button">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span data-t="chooseFile">Выбрать файл…</span>
+          </button>
+          <button class="btn" id="dictateBtn" type="button">
+            <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
+            <span data-t="dictate">Надиктовать</span>
+          </button>
+        </div>
+        <p class="hint">mp3 · m4a · wav · flac · ogg · opus · mp4 · mov · mkv · webm</p>
+      </div>
+
+      <div class="drop-rec" id="dropRec" hidden>
+        <div class="rec-head">
+          <span class="rec-dot"></span>
+          <span id="recTime" class="mono">00:00</span>
+        </div>
+        <div class="meter"><div class="meter-fill" id="recLevel"></div></div>
+        <button class="btn primary" id="stopBtn" type="button">
+          <svg class="ico" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span data-t="stopAndTranscribe">Остановить и расшифровать</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Ошибка -->
+    <div class="alert" id="alert" hidden>
+      <svg class="ico warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg>
+      <span id="alertText"></span>
+      <button class="btn small" id="alertAction" type="button" hidden></button>
+      <button class="icon-btn" id="alertClose" type="button" aria-label="×">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <!-- Прогресс -->
+    <div class="progress-row" id="progressRow" hidden>
+      <div class="bar"><div class="bar-fill" id="progressFill"></div></div>
+      <span class="mono muted" id="progressPct">0%</span>
+      <span class="muted" id="queueInfo"></span>
+      <button class="btn small" id="cancelBtn" type="button" data-t="cancel">Отмена</button>
+    </div>
+
+    <!-- Текст -->
+    <textarea id="transcript" spellcheck="false" data-t-placeholder="placeholder"></textarea>
+
+    <!-- Низ -->
+    <footer class="bottom">
+      <p class="status" id="status"></p>
+      <div class="row">
+        <button class="btn" id="revealBtn" type="button" hidden>
+          <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8l4 4-4 4"/></svg>
+          <span id="revealLabel"></span>
+        </button>
+        <button class="btn" id="clearBtn" type="button" data-t="clear">Очистить</button>
+        <button class="btn" id="copyBtn" type="button">
+          <svg class="ico" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          <span data-t="copy">Копировать</span>
+        </button>
+        <button class="btn" id="saveBtn" type="button">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          <span data-t="saveTxt">Сохранить .txt…</span>
+        </button>
+      </div>
+    </footer>
+
+    <div class="stats" id="stats">
+      <div class="gauge" data-t-title="appCpuHint" id="gApp"><span data-t="appCpu">ЦП приложения</span><i><b></b></i><em class="mono">0%</em></div>
+      <div class="gauge" data-t-title="sysCpuHint" id="gSys"><span data-t="sysCpu">ЦП системы</span><i><b></b></i><em class="mono">0%</em></div>
+      <div class="gauge" data-t-title="gpuHint" id="gGpu" hidden><span>GPU</span><i><b></b></i><em class="mono">0%</em></div>
+      <div class="gauge" id="gMem"><span data-t="memory">Память</span><em class="mono">—</em></div>
+      <div class="spacer"></div>
+      <button class="link" id="engineInfo" type="button"></button>
+      <button class="link" id="aboutBtn" type="button" data-t="about">О программе</button>
+    </div>
+  </main>
+
+  <!-- Модели -->
+  <dialog class="sheet" id="modelsDialog">
+    <div class="sheet-head">
+      <div>
+        <h2 id="modelsHeading" tabindex="-1" autofocus></h2>
+        <p class="muted" id="modelsIntro"></p>
+      </div>
+      <button class="icon-btn" id="modelsClose" type="button" aria-label="×">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="machine" id="machine"></div>
+    <div class="model-list" id="modelList"></div>
+    <div class="sheet-foot">
+      <label class="check">
+        <input type="checkbox" id="useGpu"><span id="useGpuLabel"></span>
+      </label>
+      <div class="spacer"></div>
+      <button class="btn" id="importBtn" type="button" data-t="importModel">Добавить файл модели…</button>
+      <button class="btn" id="modelsDirBtn" type="button" data-t="openModelsDir">Открыть папку</button>
+    </div>
+  </dialog>
+
+  <!-- О программе -->
+  <dialog class="sheet small" id="aboutDialog">
+    <div class="about">
+      <img src="icon.png" alt="" width="88" height="88">
+      <h2 tabindex="-1" autofocus>Auris Whisper</h2>
+      <p class="muted" id="aboutVersion"></p>
+      <p id="aboutText"></p>
+      <p class="muted small-text" id="aboutCredits"></p>
+      <div class="row center">
+        <button class="btn" id="githubBtn" type="button">GitHub</button>
+        <button class="btn primary" id="aboutClose" type="button">OK</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

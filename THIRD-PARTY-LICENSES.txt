@@ -1,22 +1,54 @@
 Auris Whisper использует следующие открытые компоненты.
-Все они распространяются по разрешительным лицензиям, совместимым с MIT.
+Auris Whisper uses the following open-source components.
 
-1. whisper.cpp и ggml — © Georgi Gerganov и участники проекта, лицензия MIT.
-   https://github.com/ggml-org/whisper.cpp
+Движок и модели / Engine and models
+-----------------------------------
+whisper.cpp и ggml — © Georgi Gerganov and contributors — MIT
+    https://github.com/ggml-org/whisper.cpp
+whisper-rs — © Niko and contributors — Unlicense
+    https://codeberg.org/tazz4843/whisper-rs
+Модели Whisper / Whisper models — © OpenAI — MIT
+    https://github.com/openai/whisper
+    (скачиваются по выбору пользователя / downloaded on demand from
+     https://huggingface.co/ggerganov/whisper.cpp)
+Silero VAD (ggml-silero-v5.1.2.bin, внутри приложения / bundled) — © Silero Team — MIT
+    https://github.com/snakers4/silero-vad
 
-2. Модель Whisper large-v3 — © OpenAI, лицензия MIT.
-   https://github.com/openai/whisper
+Окно и система / Application shell
+----------------------------------
+Tauri и плагины / and plugins — © Tauri Programme within The Commons Conservancy — MIT or Apache-2.0
+    https://github.com/tauri-apps/tauri
+cpal (запись с микрофона / audio capture) — © RustAudio — Apache-2.0
+    https://github.com/RustAudio/cpal
+sysinfo — © Guillaume Gomez — MIT
+    https://github.com/GuillaumeGomez/sysinfo
+reqwest, tokio, serde, sha2 и другие крейты Rust / and other Rust crates — MIT or Apache-2.0
 
-3. libogg, libvorbis, libvorbisfile — © Xiph.Org Foundation, лицензия BSD (3-clause).
-   https://gitlab.xiph.org/xiph/ogg  ·  https://gitlab.xiph.org/xiph/vorbis
+Звук / Audio
+------------
+Symphonia — © The Project Symphonia Developers — MPL-2.0
+    https://github.com/pdeljanov/Symphonia
+    Используется без изменений; исходный код доступен по ссылке выше.
+    Used unmodified; the source code is available at the link above.
+libopus (через / via opusic-sys) — © Xiph.Org Foundation, Skype Limited, Octasic,
+    Jean-Marc Valin, Timothy B. Terriberry and others — BSD-3-Clause
+    https://gitlab.xiph.org/xiph/opus
+rubato (пересэмплирование / resampling) — © Henrik Enquist — MIT
+    https://github.com/HEnquist/rubato
 
-4. libopus, libopusfile — © Xiph.Org Foundation, Skype Limited, Octasic,
-   Jean-Marc Valin, Timothy B. Terriberry и другие; лицензия BSD (3-clause).
-   https://gitlab.xiph.org/xiph/opus  ·  https://gitlab.xiph.org/xiph/opusfile
+Только в сборке для Windows / Windows build only
+------------------------------------------------
+Vulkan Loader (vulkan-1.dll) — © The Khronos Group Inc., LunarG — Apache-2.0
+    https://github.com/KhronosGroup/Vulkan-Loader
+Microsoft Visual C++ Runtime (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) —
+    © Microsoft Corporation — распространяется на условиях лицензии Visual Studio
+    для распространяемого кода / redistributed under the Visual Studio
+    "Distributable Code" terms.
 
-Полные тексты лицензий этих проектов доступны по указанным адресам.
-Ниже приведён типовой текст BSD-3-Clause, под которым распространяются
-компоненты Xiph.Org:
+Полные тексты лицензий доступны по указанным адресам. Ниже — текст BSD-3-Clause,
+под которым распространяется libopus.
+Full license texts are available at the addresses above. The BSD-3-Clause text
+for libopus follows.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -26,13 +58,13 @@ modification, are permitted provided that the following conditions are met:
 - Redistributions in binary form must reproduce the above copyright notice,
   this list of conditions and the following disclaimer in the documentation
   and/or other materials provided with the distribution.
-- Neither the name of the Xiph.Org Foundation nor the names of its
-  contributors may be used to endorse or promote products derived from this
-  software without specific prior written permission.
+- Neither the name of Internet Society, IETF or IETF Trust, nor the names of
+  specific contributors, may be used to endorse or promote products derived
+  from this software without specific prior written permission.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
-FOUNDATION OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
 SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES HOWEVER CAUSED AND ON ANY THEORY
 OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT ARISING IN ANY WAY
 OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH

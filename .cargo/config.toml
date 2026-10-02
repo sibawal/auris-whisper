@@ -1,0 +1,13 @@
+# Флаги сборки ggml (whisper-rs-sys пробрасывает переменные GGML_* в cmake).
+#
+# GGML_NATIVE=OFF обязателен для раздаваемых сборок: иначе ggml вкомпилит
+# инструкции процессора, на котором собирают (на M4 — SME/i8mm, на CI-сервере —
+# AVX-512), и у пользователей со старыми процессорами приложение упадёт
+# с «Illegal instruction».
+#
+# Для Apple Silicon фиксируем базис, который есть у всех чипов M1–M4.
+# На x86_64 эта переменная игнорируется, там ggml берёт AVX2/FMA/F16C.
+[env]
+GGML_NATIVE = "OFF"
+GGML_CPU_ARM_ARCH = "armv8.2-a+dotprod+fp16"
+GGML_OPENMP = "OFF"
