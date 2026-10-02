@@ -138,8 +138,10 @@ npm run build     # собрать установщик для текущей с
 ```
 
 На Windows собирайте из *x64 Native Tools Command Prompt for VS* с
-`set CMAKE_GENERATOR=Ninja` (генератор шейдеров Vulkan в whisper.cpp — вложенный
-CMake-проект, который с генератором Visual Studio не находит компилятор), и перед
+`set CMAKE_GENERATOR=Ninja` и короткой папкой сборки, например
+`set CARGO_TARGET_DIR=C:\t` (генератор шейдеров Vulkan в whisper.cpp — вложенный
+CMake-проект: с генератором Visual Studio он не находит компилятор, а в глубокой
+папке его пути не влезают в 260 символов), и перед
 `npm run build` один раз выполните `scripts\windows-runtime.ps1`: он положит рядом
 с приложением рантайм Visual C++ и загрузчик Vulkan, чтобы приложение запускалось
 на «чистой» системе.

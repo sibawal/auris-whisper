@@ -139,8 +139,10 @@ npm run build     # build an installer for the current system
 ```
 
 On Windows, build from the *x64 Native Tools Command Prompt for VS* with
-`set CMAKE_GENERATOR=Ninja` (whisper.cpp's Vulkan shader generator is a nested
-CMake project that cannot find the compiler under the Visual Studio generator),
+`set CMAKE_GENERATOR=Ninja` and a short build folder such as
+`set CARGO_TARGET_DIR=C:\t` (whisper.cpp's Vulkan shader generator is a nested
+CMake project: it cannot find the compiler under the Visual Studio generator and
+its paths overflow the 260-character limit inside a deep project folder),
 and run `scripts\windows-runtime.ps1` once before `npm run build`: it places the
 Visual C++ runtime and the Vulkan loader next to the app so it starts on a clean
 system.
