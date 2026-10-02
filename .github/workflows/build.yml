@@ -80,6 +80,20 @@ jobs:
           cache: true
           stripdown: true
 
+      # Генератор шейдеров Vulkan в whisper.cpp собирается отдельным под-проектом CMake.
+      # С генератором Visual Studio он не находит компилятор, поэтому на Windows
+      # собираем через Ninja в окружении разработчика MSVC.
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Ninja for CMake
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install ninja -y --no-progress
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
       - name: Windows runtime DLLs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -153,7 +167,7 @@ jobs:
         run: |
           [ -f ci.log ] || exit 0
           enc() { sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-60000; }
-          errs=$(grep -E "error(\[E[0-9]+\])?:|error:|Error:|FAILED|fatal|LNK[0-9]{4}|undefined reference|cannot find|not found|panicked" ci.log | grep -v "^warning" | tail -n 60 | enc)
+          errs=$(grep -E "error(\[E[0-9]+\])?:|error:|Error:|error C[0-9]{4}|error MSB|CMake Error|No CMAKE_|FAILED|fatal|LNK[0-9]{4}|undefined reference|cannot find|not found|panicked" ci.log | grep -v "^warning" | tail -n 60 | enc)
           echo "::error title=Errors (${{ matrix.slug }})::${errs}"
           echo "::error title=Log tail (${{ matrix.slug }})::$(tail -n 60 ci.log | enc)"
 

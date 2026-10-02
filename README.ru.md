@@ -137,9 +137,12 @@ npm run dev       # запустить в режиме разработки
 npm run build     # собрать установщик для текущей системы
 ```
 
-На Windows перед `npm run build` один раз выполните `scripts\windows-runtime.ps1`:
-он положит рядом с приложением рантайм Visual C++ и загрузчик Vulkan, чтобы
-приложение запускалось на «чистой» системе.
+На Windows собирайте из *x64 Native Tools Command Prompt for VS* с
+`set CMAKE_GENERATOR=Ninja` (генератор шейдеров Vulkan в whisper.cpp — вложенный
+CMake-проект, который с генератором Visual Studio не находит компилятор), и перед
+`npm run build` один раз выполните `scripts\windows-runtime.ps1`: он положит рядом
+с приложением рантайм Visual C++ и загрузчик Vulkan, чтобы приложение запускалось
+на «чистой» системе.
 
 Консольная проверка того же декодера и движка:
 
