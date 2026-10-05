@@ -152,10 +152,34 @@ jobs:
           cargo build --release --example decode --target ${{ matrix.target }} 2>&1 | tee -a ../ci.log
           BIN=${CARGO_TARGET_DIR:-target}/${{ matrix.target }}/release/examples/decode
           A=../tests/audio
-          # Обязательно на всех системах: видео с iPhone (HEVC) и звук 5.1
-          "$BIN" $A/video_hevc_iphone.mov $A/video_aac51.mp4 2>&1 | tee -a ../ci.log
+          # Обязательно на всех системах: видео с iPhone (HEVC) и звук 5.1;
+          # на Linux через ffmpeg — вообще все тестовые видео
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            "$BIN" $A/video_*.* 2>&1 | tee -a ../ci.log
+          else
+            "$BIN" $A/video_hevc_iphone.mov $A/video_aac51.mp4 2>&1 | tee -a ../ci.log
+          fi
           # Для сведения (зависит от кодеков системы) — результат видно в аннотациях
           "$BIN" $A/video_ac3.mp4 $A/video_wmv.wmv $A/video_avi_mp3.avi 2>&1 | tee -a ../ci.log | sed 's/^/::notice title=Video (${{ matrix.slug }})::/' || true
+
+      # Диктовка на Linux по-настоящему: виртуальный микрофон PulseAudio, в который
+      # проигрывается тестовая фраза; пишет её тот же модуль записи, что в приложении.
+      - name: Dictation test (Linux, virtual microphone)
+        if: runner.os == 'Linux'
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          sudo apt-get install -y pulseaudio pulseaudio-utils libasound2-plugins > /dev/null
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=vmic
+          pactl set-default-source vmic.monitor
+          ffmpeg -v error -y -i ../tests/audio/ru_speech.m4a -ar 48000 -ac 2 /tmp/speech.wav
+          cargo build --release --example record --target ${{ matrix.target }} 2>&1 | tee -a ../ci.log
+          BIN=${CARGO_TARGET_DIR:-target}/${{ matrix.target }}/release/examples/record
+          ( sleep 3; paplay --device=vmic /tmp/speech.wav ) &
+          "$BIN" 18 ../test-model/ggml-tiny.bin ru 2>&1 | tee out.txt | tee -a ../ci.log
+          grep -q "роверк" out.txt || { echo "::error::dictation test: no expected text"; exit 1; }
 
       # ---------- Сборка установщика ----------
 
@@ -164,6 +188,22 @@ jobs:
         run: |
           set -o pipefail
           npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} 2>&1 | tee -a ci.log
+
+      # AppImage должен запускаться, а не падать на старте (свои библиотеки, WebKit).
+      - name: Launch test (Linux AppImage)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y xvfb > /dev/null
+          APP=$(ls ${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/bundle/appimage/*.AppImage)
+          chmod +x "$APP"
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 25 xvfb-run -a "$APP" > launch.log 2>&1
+          code=$?
+          set -e
+          tail -n 25 launch.log
+          cat launch.log >> ci.log
+          [ $code -eq 124 ] || { echo "::error::AppImage exited early with code $code"; exit 1; }
 
       - name: Collect installers
         shell: bash
