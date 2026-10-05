@@ -3,7 +3,7 @@ name: Build
 # Сборка под четыре платформы. На тег v* — ещё и черновик релиза с установщиками.
 on:
   push:
-    branches: [main, v2-crossplatform]
+    branches: [main, "release-*"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
