@@ -17,11 +17,13 @@ pub struct Settings {
     /// Выбранная модель (id из каталога или имя своего файла).
     pub model: Option<String>,
     pub use_gpu: bool,
+    /// Микрофон (идентификатор cpal); пусто — системный по умолчанию.
+    pub mic: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { ui_lang: None, language: "auto".into(), timestamps: false, auto_save: true, model: None, use_gpu: true }
+        Self { ui_lang: None, language: "auto".into(), timestamps: false, auto_save: true, model: None, use_gpu: true, mic: None }
     }
 }
 

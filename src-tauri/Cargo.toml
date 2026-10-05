@@ -1,6 +1,6 @@
 [package]
 name = "auris-whisper"
-version = "2.0.0"
+version = "2.0.1"
 description = "Offline speech-to-text: drop a file or dictate, get clean text"
 authors = ["boopi.ru"]
 license = "MIT"
@@ -58,6 +58,11 @@ whisper-rs = { version = "0.16", features = ["metal"] }
 core-foundation-sys = "0.8"
 io-kit-sys = "0.4"
 libc = "0.2"
+# Запасной декодер: AVFoundation (HEVC-видео с iPhone, AAC 5.1, AC-3, ALAC…)
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-media", "AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVMediaFormat"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMSampleBuffer", "CMBlockBuffer"] }
 
 # Windows и Linux: Vulkan — работает на видеокартах NVIDIA, AMD и Intel
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
@@ -67,6 +72,9 @@ whisper-rs = { version = "0.16", features = ["vulkan"] }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Performance",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_Media_MediaFoundation",
 ] }
 
 [profile.release]

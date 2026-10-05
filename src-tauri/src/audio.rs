@@ -24,7 +24,29 @@ pub const SAMPLE_RATE: u32 = 16_000;
 
 /// Декодирует файл целиком. Длинные записи читаются потоково:
 /// в памяти копится только результат в 16 кГц (час — около 230 МБ).
+///
+/// Сначала symphonia (она же читает ogg/opus/webm/mkv, которых нет в системных
+/// декодерах). Если не справилась — системный декодер или ffmpeg: видео с iPhone
+/// (HEVC), AAC 5.1, AC-3, avi, ts, wmv и прочее.
 pub fn decode_file(path: &Path) -> Result<Vec<f32>, String> {
+    match decode_symphonia(path) {
+        Ok(s) => Ok(s),
+        Err(e) => match crate::native_decode::decode(path) {
+            Some(s) => Ok(s),
+            None => Err(if crate::native_decode::has_ffmpeg() || cfg!(windows) {
+                e
+            } else {
+                let sep = if e.ends_with('.') { "" } else { "." };
+                e + sep + &tr(
+                    " Установите ffmpeg (brew install ffmpeg или через пакетный менеджер) — тогда откроется почти любой формат.",
+                    " Install ffmpeg (brew install ffmpeg or your package manager) to open almost any format.",
+                )
+            }),
+        },
+    }
+}
+
+fn decode_symphonia(path: &Path) -> Result<Vec<f32>, String> {
     let file = File::open(path).map_err(|e| tr("Не удалось открыть файл: ", "Could not open the file: ") + &e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
 
@@ -109,8 +131,8 @@ pub fn decode_file(path: &Path) -> Result<Vec<f32>, String> {
 fn unsupported(e: &SymError) -> String {
     match e {
         SymError::Unsupported(_) => tr(
-            "Этот формат не поддерживается. Подойдут mp3, m4a, wav, flac, ogg, opus, mp4, mov, mkv, webm.",
-            "This format is not supported. Use mp3, m4a, wav, flac, ogg, opus, mp4, mov, mkv or webm.",
+            "Не удалось прочитать звук из этого файла: такой формат или кодек не поддерживается.",
+            "Could not read audio from this file: the format or codec is not supported.",
         ),
         other => decode_err(other),
     }
@@ -126,7 +148,7 @@ fn decode_err(e: &SymError) -> String {
 /// Частота может смениться посреди файла (бывает в склеенных mp3) —
 /// тогда ресемплер пересоздаётся.
 #[derive(Default)]
-struct MonoSink {
+pub(crate) struct MonoSink {
     out: Vec<f32>,
     resampler: Option<(u32, StreamResampler)>,
     mono: Vec<f32>,
@@ -153,7 +175,7 @@ impl MonoSink {
         r
     }
 
-    fn push_interleaved(&mut self, data: &[f32], channels: usize, rate: u32) -> Result<(), String> {
+    pub(crate) fn push_interleaved(&mut self, data: &[f32], channels: usize, rate: u32) -> Result<(), String> {
         let mono: Vec<f32> = if channels == 1 {
             data.to_vec()
         } else {
@@ -180,7 +202,7 @@ impl MonoSink {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Vec<f32>, String> {
+    pub(crate) fn finish(mut self) -> Result<Vec<f32>, String> {
         if let Some((_, rs)) = self.resampler.take() {
             self.out.extend(rs.finish());
         }

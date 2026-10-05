@@ -22,11 +22,17 @@ No accounts, no uploads. Everything runs on your own computer.
 ## What it does
 
 - **Drop in audio or video** — mp3, m4a, wav, flac, aiff, caf, aac, ogg, opus,
-  mp4, mov, mkv, webm. Drop several at once, they run one after another.
+  mp4, mov, mkv, webm, plus iPhone videos (HEVC), 5.1 sound and AC-3 through the
+  system decoder (AVFoundation on macOS, Media Foundation on Windows; avi, wmv
+  and ts on Windows too). Anything else opens if [ffmpeg](https://ffmpeg.org) is
+  installed — on Linux it is the fallback for all exotic formats. Drop several
+  files at once, they run one after another.
 - **Voice messages work.** Ogg Opus from messengers opens fine; the format is
   detected from the file contents, not the extension.
 - **Dictate** (⌘R / Ctrl+R) with a live level meter, then *Stop and transcribe*.
-  The recording is kept as `.wav` next to its transcript.
+  The recording is kept as `.wav` next to its transcript. Pick the microphone
+  under the buttons; if it stays silent, the app says so right away and opens the
+  system microphone settings.
 - **Pick a model, from tiny to the most accurate.** Models are not baked into the
   installer: choose one after installing and it downloads once. Keep several,
   switch any time, delete the ones you don't need, or add your own model file.
@@ -59,7 +65,8 @@ Grab the installer for your system from [Releases](../../releases):
 | Linux (any distribution) | `AurisWhisper-x.y.z-Linux-x86_64.AppImage` |
 | Debian / Ubuntu / Mint | `AurisWhisper-x.y.z-Linux-x86_64.deb` |
 
-Installers are 7–15 MB: the model is chosen and downloaded on first launch.
+Installers for macOS and Windows are 7–11 MB, the Linux AppImage is about 90 MB
+(it carries its own WebKit). The model is chosen and downloaded on first launch.
 
 ### First launch
 
@@ -78,7 +85,10 @@ user profile, no administrator rights needed.
 **Linux.** AppImage: `chmod +x AurisWhisper-*.AppImage` and run it.
 Package: `sudo apt install ./AurisWhisper-*.deb`.
 
-Dictation asks for microphone access on first use.
+Dictation asks for microphone access on first use on macOS. Windows does not ask
+desktop programs — if the level meter stays at zero, open *Settings → Privacy &
+security → Microphone* and turn on *Microphone access* and *Let desktop apps
+access your microphone* (the app points there with a button).
 
 ## Models
 

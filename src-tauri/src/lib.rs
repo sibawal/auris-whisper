@@ -13,6 +13,7 @@ pub mod engine;
 pub mod i18n;
 pub mod models;
 pub mod monitor;
+mod native_decode;
 pub mod recorder;
 pub mod settings;
 
@@ -259,6 +260,17 @@ fn cancel_job(state: State<'_, AppState>) {
 struct RecLevel {
     level: f32,
     seconds: f64,
+    silent: bool,
+}
+
+#[tauri::command]
+fn list_mics() -> Vec<recorder::InputDevice> {
+    recorder::list_devices()
+}
+
+#[tauri::command]
+fn open_mic_settings() -> Result<(), String> {
+    recorder::open_settings()
 }
 
 #[tauri::command]
@@ -266,12 +278,20 @@ fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
     if state.busy.load(Ordering::Relaxed) {
         return Err(tr("Дождитесь окончания расшифровки.", "Wait until the transcription finishes."));
     }
+    if recorder::access_denied() {
+        return Err(String::from(recorder::MIC_ERROR)
+            + &tr(
+                "Windows запрещает программам доступ к микрофону. Откройте «Параметры → Конфиденциальность и защита → Микрофон» и включите «Доступ к микрофону» и «Разрешить классическим приложениям доступ к микрофону».",
+                "Windows blocks microphone access for programs. Open Settings → Privacy & security → Microphone and turn on “Microphone access” and “Let desktop apps access your microphone”.",
+            ));
+    }
     let mut slot = state.recording.lock().unwrap();
     if slot.is_some() {
         return Ok(());
     }
-    let rec = recorder::Recording::start(move |lvl| {
-        let _ = app.emit("rec-level", RecLevel { level: lvl.level, seconds: lvl.seconds });
+    let mic = state.settings.lock().unwrap().mic.clone();
+    let rec = recorder::Recording::start(mic, move |lvl| {
+        let _ = app.emit("rec-level", RecLevel { level: lvl.level, seconds: lvl.seconds, silent: lvl.silent });
     })?;
     *slot = Some(rec);
     Ok(())
@@ -430,12 +450,21 @@ fn run_one(
 
 // MARK: - Файлы, открытые снаружи
 
+/// Файлы, пришедшие до того, как приложение успело запуститься.
+static EARLY_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 fn open_paths(app: &AppHandle, paths: Vec<String>) {
     let paths: Vec<String> = paths.into_iter().filter(|p| Path::new(p).is_file()).collect();
     if paths.is_empty() {
         return;
     }
-    let state = app.state::<AppState>();
+    // macOS присылает «открой файлы» (двойной клик, «Открыть с помощью») ещё до
+    // того, как отработал setup и появилось состояние приложения. Тогда
+    // откладываем файлы — setup заберёт их отсюда.
+    let Some(state) = app.try_state::<AppState>() else {
+        EARLY_OPEN.lock().unwrap().extend(paths);
+        return;
+    };
     if state.ui_ready.load(Ordering::Relaxed) {
         let _ = app.emit("open-files", paths);
     } else {
@@ -506,7 +535,11 @@ pub fn run() {
                 busy: Arc::new(AtomicBool::new(false)),
                 recording: Mutex::new(None),
                 downloads: Arc::new(models::Downloads::default()),
-                pending_open: Mutex::new(file_args(std::env::args())),
+                pending_open: Mutex::new({
+                    let mut files = file_args(std::env::args());
+                    files.append(&mut EARLY_OPEN.lock().unwrap());
+                    files
+                }),
                 ui_ready: AtomicBool::new(false),
                 system,
             });
@@ -539,6 +572,8 @@ pub fn run() {
             cancel_job,
             start_recording,
             stop_recording,
+            list_mics,
+            open_mic_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Auris Whisper");

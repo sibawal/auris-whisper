@@ -7,9 +7,11 @@ const invoke = T.core.invoke;
 const listen = T.event.listen;
 const $ = (id) => document.getElementById(id);
 const IS_MAC = navigator.userAgent.includes("Mac");
+const IS_LINUX = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
 
 const MEDIA_EXT = ["mp3", "m4a", "wav", "aiff", "aif", "caf", "aac", "flac", "ogg", "oga", "opus",
-  "mp4", "m4v", "mov", "webm", "mkv", "mka", "wma", "amr", "3gp"];
+  "mp4", "m4v", "mov", "webm", "mkv", "mka", "wma", "amr", "3gp", "3g2",
+  "avi", "wmv", "asf", "ts", "mts", "m2ts", "mpg", "mpeg", "flv", "ac3", "eac3"];
 
 const S = {
   settings: null,
@@ -92,6 +94,7 @@ function applyStrings() {
   renderModelChip();
   renderEngineInfo();
   if ($("modelsDialog").open) renderModels();
+  refreshMics();
 }
 
 function renderStatus() {
@@ -152,6 +155,20 @@ function showError(text, action) {
   }
 }
 function hideError() { $("alert").hidden = true; }
+
+// Ошибки микрофона приходят с префиксом «mic:» — к ним добавляем кнопку,
+// открывающую системные настройки доступа к микрофону.
+function openMicSettings() {
+  invoke("open_mic_settings").catch((e) => showError(String(e)));
+}
+function showMicAwareError(e) {
+  const msg = String(e);
+  if (msg.startsWith("mic:")) {
+    showError(msg.slice(4), IS_LINUX ? null : { label: t("micSettings"), run: openMicSettings });
+  } else {
+    showError(msg);
+  }
+}
 
 function appendText(text) {
   if (!text) return;
@@ -265,7 +282,7 @@ async function toggleRecording() {
       await invoke("stop_recording", { baseName: dictationBaseName() });
     } catch (e) {
       S.busy = false; renderBusy();
-      showError(String(e));
+      showMicAwareError(e);
       setStatus(() => t("ready"));
     }
     return;
@@ -278,11 +295,34 @@ async function toggleRecording() {
     S.recording = true;
     $("recTime").textContent = "00:00";
     $("recLevel").style.width = "2%";
+    $("recWarn").hidden = true;
     setStatus(() => t("recording"));
     renderBusy();
   } catch (e) {
-    showError(String(e));
+    showMicAwareError(e);
   }
+}
+
+// ---------- Выбор микрофона ----------
+
+async function refreshMics() {
+  let mics = [];
+  try { mics = await invoke("list_mics"); } catch { /* нет звуковой подсистемы — просто прячем выбор */ }
+  const sel = $("micSelect");
+  const def = mics.find((m) => m.isDefault);
+  sel.innerHTML = "";
+  const first = document.createElement("option");
+  first.value = ""; first.textContent = t("micDefault", def ? def.name : "");
+  sel.appendChild(first);
+  for (const m of mics) {
+    const o = document.createElement("option");
+    o.value = m.id; o.textContent = m.name;
+    sel.appendChild(o);
+  }
+  const saved = S.settings.mic;
+  sel.value = saved && mics.some((m) => m.id === saved) ? saved : "";
+  // Выбор нужен, только когда микрофонов больше одного (или выбранный пропал).
+  $("micWrap").hidden = mics.length < 2 && !saved;
 }
 
 // ---------- Модели ----------
@@ -573,7 +613,14 @@ function wire() {
   });
 
   listen("job", (e) => onJob(e.payload));
+  $("micSelect").addEventListener("change", (e) => { S.settings.mic = e.target.value || null; saveSettings(); });
+  $("micSelect").addEventListener("focus", refreshMics);
+  window.addEventListener("focus", () => { if (!S.recording) refreshMics(); });
+  $("recWarnBtn").addEventListener("click", openMicSettings);
+  if (IS_LINUX) $("recWarnBtn").hidden = true;
+
   listen("rec-level", (e) => {
+    $("recWarn").hidden = !e.payload.silent;
     $("recTime").textContent = timecode(e.payload.seconds);
     $("recLevel").style.width = `${Math.max(2, e.payload.level * 100)}%`;
   });

@@ -178,6 +178,15 @@ select {
 .drop.over .wave { stroke: var(--accent); }
 .hint { font-size: 11px; color: var(--faint); }
 
+.mic { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.mic select { height: 26px; min-width: 0; max-width: 340px; font-size: 12px; box-shadow: none; }
+
+.rec-warn {
+  display: flex; align-items: center; gap: 10px; max-width: 560px;
+  padding: 8px 10px; border-radius: 8px; background: var(--warn-bg);
+  font-size: 12.5px; text-align: left;
+}
+
 .rec-head { display: flex; align-items: center; gap: 10px; font-size: 20px; }
 .rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
