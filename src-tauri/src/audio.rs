@@ -33,14 +33,22 @@ pub fn decode_file(path: &Path) -> Result<Vec<f32>, String> {
         Ok(s) => Ok(s),
         Err(e) => match crate::native_decode::decode(path) {
             Some(s) => Ok(s),
-            None => Err(if crate::native_decode::has_ffmpeg() || cfg!(windows) {
+            None => Err(if crate::native_decode::has_ffmpeg() {
                 e
             } else {
+                let install = if cfg!(target_os = "macos") {
+                    "brew install ffmpeg"
+                } else if cfg!(windows) {
+                    "winget install ffmpeg"
+                } else {
+                    "sudo apt install ffmpeg"
+                };
                 let sep = if e.ends_with('.') { "" } else { "." };
-                e + sep + &tr(
-                    " Установите ffmpeg (brew install ffmpeg или через пакетный менеджер) — тогда откроется почти любой формат.",
-                    " Install ffmpeg (brew install ffmpeg or your package manager) to open almost any format.",
-                )
+                e + sep
+                    + &tr(
+                        &format!(" Установите ffmpeg ({install}) и перезапустите приложение — тогда откроется почти любой формат."),
+                        &format!(" Install ffmpeg ({install}) and restart the app to open almost any format."),
+                    )
             }),
         },
     }

@@ -187,7 +187,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} 2>&1 | tee -a ci.log
+          build() { npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} 2>&1 | tee -a ci.log; }
+          # На Mac-раннерах hdiutil иногда падает при упаковке DMG («Resource busy») — повторяем.
+          build || { [ "$RUNNER_OS" = "macOS" ] && sleep 20 && build; }
 
       # AppImage должен запускаться, а не падать на старте (свои библиотеки, WebKit).
       - name: Launch test (Linux AppImage)
