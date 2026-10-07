@@ -9,6 +9,7 @@
 //!   open-files        — файлы, открытые через «Открыть с помощью» / двойной клик
 
 pub mod audio;
+pub mod diarize;
 pub mod engine;
 pub mod i18n;
 pub mod models;
@@ -16,6 +17,7 @@ pub mod monitor;
 mod native_decode;
 pub mod recorder;
 pub mod settings;
+mod updates;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,9 @@ use i18n::tr;
 use settings::Settings;
 
 const VAD_FILE: &str = "ggml-silero-v5.1.2.bin";
+
+/// Копия, собранная без AVX2/FMA/F16C для старых процессоров (задаётся при сборке в CI).
+pub const IS_COMPAT_BUILD: bool = option_env!("AURIS_COMPAT_BUILD").is_some();
 
 struct AppState {
     settings: Mutex<Settings>,
@@ -58,6 +63,8 @@ struct SystemInfo {
     recommended: &'static str,
     version: &'static str,
     whisper_version: &'static str,
+    /// Запущена совместимая копия движка (процессор без AVX2).
+    compat: bool,
 }
 
 // MARK: - События расшифровки
@@ -73,12 +80,15 @@ enum JobEvent {
     #[serde(rename_all = "camelCase")]
     Result {
         name: String,
-        text: String,
+        segments: Vec<Segment>,
+        /// Сколько спикеров нашлось (0 — запись не делили по голосам).
+        speakers: usize,
         header: bool,
         elapsed: f64,
         audio_seconds: f64,
         language: Option<String>,
-        saved_to: Option<String>,
+        /// Куда интерфейс сохранит текст (автосохранение), если включено.
+        save_path: Option<String>,
         on_gpu: bool,
     },
     #[serde(rename_all = "camelCase")]
@@ -109,6 +119,7 @@ struct Bootstrap {
     system: SystemInfo,
     models_dir: String,
     pending_files: Vec<String>,
+    diarize_ready: bool,
 }
 
 #[tauri::command]
@@ -122,6 +133,7 @@ fn bootstrap(state: State<'_, AppState>) -> Bootstrap {
         system: state.system.clone(),
         models_dir: state.models_dir.to_string_lossy().into(),
         pending_files: std::mem::take(&mut *state.pending_open.lock().unwrap()),
+        diarize_ready: models::diarize_ready(&state.models_dir),
     }
 }
 
@@ -137,10 +149,72 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) {
 struct ModelsState {
     installed: Vec<models::InstalledModel>,
     downloading: Vec<String>,
+    diarize_ready: bool,
 }
 
 fn models_state(state: &AppState) -> ModelsState {
-    ModelsState { installed: models::installed(&state.models_dir), downloading: state.downloads.active_ids() }
+    ModelsState {
+        installed: models::installed(&state.models_dir),
+        downloading: state.downloads.active_ids(),
+        diarize_ready: models::diarize_ready(&state.models_dir),
+    }
+}
+
+/// Модели разделения по голосам: два файла, общий прогресс под id «diarization».
+#[tauri::command]
+fn download_diarization(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    const ID: &str = "diarization";
+    let Some(cancel) = state.downloads.begin(ID) else { return Ok(()) };
+    let dir = state.models_dir.clone();
+    let downloads = state.downloads.clone();
+    models_changed(&app);
+
+    tauri::async_runtime::spawn(async move {
+        let files = [models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING];
+        let total: u64 = files.iter().map(|f| f.size).sum();
+        let mut done_before = 0u64;
+        let mut error = None;
+        for f in &files {
+            let ok_size = std::fs::metadata(dir.join(f.file)).map(|m| m.len() == f.size).unwrap_or(false);
+            if !ok_size {
+                let app2 = app.clone();
+                let base = done_before;
+                let result = models::download(f, &dir, cancel.clone(), move |mut p| {
+                    p.id = ID.into();
+                    p.downloaded += base;
+                    p.total = total;
+                    if p.phase == "done" {
+                        p.phase = "downloading";
+                    }
+                    let _ = app2.emit("download-progress", p);
+                })
+                .await;
+                if let Err(e) = result {
+                    error = Some(e);
+                    break;
+                }
+            }
+            done_before += f.size;
+        }
+        downloads.finish(ID);
+        match error {
+            Some(e) if e != "cancelled" => {
+                let _ = app.emit(
+                    "download-progress",
+                    models::DownloadProgress { id: ID.into(), downloaded: 0, total, bytes_per_sec: 0.0, phase: "error", error: Some(e) },
+                );
+            }
+            Some(_) => {}
+            None => {
+                let _ = app.emit(
+                    "download-progress",
+                    models::DownloadProgress { id: ID.into(), downloaded: total, total, bytes_per_sec: 0.0, phase: "done", error: None },
+                );
+            }
+        }
+        models_changed(&app);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -163,7 +237,7 @@ fn download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Res
 
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
-        let result = models::download(model, &dir, cancel, move |p| {
+        let result = models::download(&model.remote(), &dir, cancel, move |p| {
             let _ = app2.emit("download-progress", p);
         })
         .await;
@@ -197,6 +271,14 @@ fn cancel_download(state: State<'_, AppState>, id: String) {
 fn delete_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     if state.busy.load(Ordering::Relaxed) {
         return Err(tr("Дождитесь окончания расшифровки.", "Wait until the transcription finishes."));
+    }
+    if id == "diarization" {
+        for f in [models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING] {
+            let _ = std::fs::remove_file(state.models_dir.join(f.file));
+            let _ = std::fs::remove_file(state.models_dir.join(format!("{}.part", f.file)));
+        }
+        models_changed(&app);
+        return Ok(());
     }
     if let Some(path) = models::model_path(&state.models_dir, &id) {
         state.engine.lock().unwrap().unload();
@@ -327,6 +409,7 @@ fn start_job(app: AppHandle, state: &AppState, sources: Vec<Source>) -> Result<(
     let busy = state.busy.clone();
     let cancel = state.cancel.clone();
     let documents = app.path().document_dir().ok();
+    let models_dir = state.models_dir.clone();
 
     let spawned = std::thread::Builder::new().name("transcribe".into()).spawn(move || {
         let total = sources.len();
@@ -334,7 +417,7 @@ fn start_job(app: AppHandle, state: &AppState, sources: Vec<Source>) -> Result<(
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            run_one(&app, &engine, &settings, model_path.as_deref(), documents.as_deref(), source, index, total);
+            run_one(&app, &engine, &settings, model_path.as_deref(), &models_dir, documents.as_deref(), &cancel, source, index, total);
         }
         busy.store(false, Ordering::SeqCst);
         emit_job(&app, JobEvent::Done { cancelled: cancel.load(Ordering::Relaxed) });
@@ -352,7 +435,9 @@ fn run_one(
     engine: &Mutex<Engine>,
     settings: &Settings,
     model_path: Option<&Path>,
+    models_dir: &Path,
     documents: Option<&Path>,
+    cancel: &AtomicBool,
     source: Source,
     index: usize,
     total: usize,
@@ -381,18 +466,6 @@ fn run_one(
         Source::Recording(s, base) => (s, None, Some(base)),
     };
     let audio_seconds = samples.len() as f64 / audio::SAMPLE_RATE as f64;
-
-    // 2. Модель (грузится один раз и остаётся в памяти)
-    let mut engine = engine.lock().unwrap();
-    if !engine.is_loaded_with(model_path, settings.use_gpu) {
-        emit_job(app, JobEvent::Phase { phase: "loading", name: name.clone(), audio_seconds, recording: is_rec });
-        if let Err(e) = engine.load(model_path, settings.use_gpu) {
-            return fail(e.message(), false);
-        }
-    }
-
-    // 3. Распознавание
-    emit_job(app, JobEvent::Phase { phase: "transcribing", name: name.clone(), audio_seconds, recording: is_rec });
     let started = Instant::now();
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut on_progress = |p: f64| {
@@ -401,34 +474,68 @@ fn run_one(
             last = Instant::now();
         }
     };
+
+    // 2. Кто когда говорил (если включено разделение по голосам)
+    let turns = if settings.diarize && models::diarize_ready(models_dir) {
+        emit_job(app, JobEvent::Phase { phase: "diarizing", name: name.clone(), audio_seconds, recording: is_rec });
+        match diarize::diarize(
+            &samples,
+            &models_dir.join(models::DIARIZE_SEGMENTATION.file),
+            &models_dir.join(models::DIARIZE_EMBEDDING.file),
+            settings.speakers,
+            cancel,
+            &mut on_progress,
+        ) {
+            Ok(t) => Some(t),
+            Err(e) if e == "cancelled" => return,
+            Err(e) => return fail(e, false),
+        }
+    } else {
+        None
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
+
+    // 3. Модель (грузится один раз и остаётся в памяти)
+    let mut engine = engine.lock().unwrap();
+    if !engine.is_loaded_with(model_path, settings.use_gpu) {
+        emit_job(app, JobEvent::Phase { phase: "loading", name: name.clone(), audio_seconds, recording: is_rec });
+        if let Err(e) = engine.load(model_path, settings.use_gpu) {
+            return fail(e.message(), false);
+        }
+    }
+
+    // 4. Распознавание
+    emit_job(app, JobEvent::Phase { phase: "transcribing", name: name.clone(), audio_seconds, recording: is_rec });
     let language = (settings.language != "auto").then_some(settings.language.as_str());
-    let segments: Vec<Segment> = match engine.transcribe(&samples, language, &mut on_progress) {
+    let segments: Vec<Segment> = match engine.transcribe(&samples, language, turns.is_some(), &mut on_progress) {
         Ok(s) => s,
         Err(EngineError::Cancelled) => return,
         Err(e) => return fail(e.message(), false),
     };
+    let segments = match &turns {
+        Some(t) => diarize::split_by_speaker(segments, t),
+        None => segments,
+    };
+    let speakers = turns.as_ref().map(|t| t.iter().map(|x| x.speaker + 1).max().unwrap_or(0)).unwrap_or(0);
     let elapsed = started.elapsed().as_secs_f64();
-    let text = if settings.timestamps { engine::timestamped_text(&segments) } else { engine::plain_text(&segments) };
     let language = engine.detected_language();
     let on_gpu = engine.on_gpu().unwrap_or(false);
     drop(engine);
 
-    // 4. Автосохранение: файл → .txt рядом; диктовка → Документы/Whisper (+ .wav)
-    let mut saved_to = None;
-    if settings.auto_save && !text.is_empty() {
+    // 5. Куда сохранить текст. Сам текст собирает интерфейс — там подставляются
+    // имена спикеров, и при переименовании файл перезаписывается.
+    // Файл → .txt рядом; диктовка → Документы/Whisper (+ .wav сразу здесь).
+    let mut save_path = None;
+    if settings.auto_save && !segments.is_empty() {
         if let Some(src) = &source_path {
-            let out = src.with_extension("txt");
-            if std::fs::write(&out, &text).is_ok() {
-                saved_to = Some(out);
-            }
+            save_path = Some(src.with_extension("txt"));
         } else if let (Some(docs), Some(base)) = (documents, rec_base.as_deref()) {
             let dir = docs.join("Whisper");
             if std::fs::create_dir_all(&dir).is_ok() {
-                let txt = dir.join(format!("{base}.txt"));
-                if std::fs::write(&txt, &text).is_ok() {
-                    let _ = audio::write_wav(&samples, &dir.join(format!("{base}.wav")));
-                    saved_to = Some(txt);
-                }
+                let _ = audio::write_wav(&samples, &dir.join(format!("{base}.wav")));
+                save_path = Some(dir.join(format!("{base}.txt")));
             }
         }
     }
@@ -437,12 +544,13 @@ fn run_one(
         app,
         JobEvent::Result {
             name,
-            text,
+            segments,
+            speakers,
             header: total > 1,
             elapsed,
             audio_seconds,
             language,
-            saved_to: saved_to.map(|p| p.to_string_lossy().into()),
+            save_path: save_path.map(|p| p.to_string_lossy().into()),
             on_gpu,
         },
     );
@@ -494,6 +602,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Pending::default())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             let data_dir = app.path().app_data_dir()?;
@@ -524,6 +634,7 @@ pub fn run() {
                 recommended: models::recommended(has_gpu, total_ram_gb),
                 version: env!("CARGO_PKG_VERSION"),
                 whisper_version: whisper_rs::WHISPER_CPP_VERSION,
+                compat: IS_COMPAT_BUILD,
             };
 
             app.manage(AppState {
@@ -574,6 +685,9 @@ pub fn run() {
             stop_recording,
             list_mics,
             open_mic_settings,
+            download_diarization,
+            updates::check_update,
+            updates::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Auris Whisper");

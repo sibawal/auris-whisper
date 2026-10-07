@@ -19,11 +19,17 @@ pub struct Settings {
     pub use_gpu: bool,
     /// Микрофон (идентификатор cpal); пусто — системный по умолчанию.
     pub mic: Option<String>,
+    /// Разделять запись по голосам.
+    pub diarize: bool,
+    /// Сколько людей в записи; пусто — определить самому.
+    pub speakers: Option<u32>,
+    /// Проверять при запуске, не вышла ли новая версия.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { ui_lang: None, language: "auto".into(), timestamps: false, auto_save: true, model: None, use_gpu: true, mic: None }
+        Self { ui_lang: None, language: "auto".into(), timestamps: false, auto_save: true, model: None, use_gpu: true, mic: None, diarize: false, speakers: None, check_updates: true }
     }
 }
 

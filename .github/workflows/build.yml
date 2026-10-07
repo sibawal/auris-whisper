@@ -183,11 +183,43 @@ jobs:
 
       # ---------- Сборка установщика ----------
 
-      - name: Build app
+      # Вторая копия приложения без AVX2/FMA/F16C — для старых процессоров
+      # (Core 2-го/3-го поколения, Pentium, Celeron). Основная копия сама
+      # переключается на неё при запуске, если процессор этих инструкций не знает.
+      - name: Compatible build for old CPUs (no AVX2)
+        if: runner.os != 'macOS'
         shell: bash
+        working-directory: src-tauri
+        env:
+          AURIS_COMPAT_BUILD: "1"
+          GGML_AVX: "OFF"
+          GGML_AVX2: "OFF"
+          GGML_FMA: "OFF"
+          GGML_F16C: "OFF"
+          GGML_BMI2: "OFF"
         run: |
           set -o pipefail
-          build() { npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} 2>&1 | tee -a ci.log; }
+          export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}-compat"
+          cargo build --release --features tauri/custom-protocol --bin auris-whisper --target ${{ matrix.target }} 2>&1 | tee -a ../ci.log
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          mkdir -p binaries
+          cp "$CARGO_TARGET_DIR/${{ matrix.target }}/release/auris-whisper$EXT" "binaries/auris-whisper-compat-${{ matrix.target }}$EXT"
+          ls -la binaries
+
+      - name: Build app
+        shell: bash
+        env:
+          # Ключ подписи обновлений (секрет репозитория). Без него собираем
+          # установщики, но без пакетов для обновления по воздуху.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -o pipefail
+          UPDATER=false; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPDATER=true
+          EXTBIN='[]'; [ "$RUNNER_OS" != "macOS" ] && EXTBIN='["binaries/auris-whisper-compat"]'
+          CONF="{\"bundle\":{\"createUpdaterArtifacts\":$UPDATER,\"externalBin\":$EXTBIN}}"
+          echo "config override: $CONF"
+          build() { npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config "$CONF" 2>&1 | tee -a ci.log; }
           # На Mac-раннерах hdiutil иногда падает при упаковке DMG («Resource busy») — повторяем.
           build || { [ "$RUNNER_OS" = "macOS" ] && sleep 20 && build; }
 
@@ -213,14 +245,23 @@ jobs:
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           B=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/bundle
           mkdir -p dist
+          N="dist/AurisWhisper-$VERSION-${{ matrix.slug }}"
+          # Пакеты обновления по воздуху и их подписи (.sig) — если ключ был задан.
+          sig() { for f in "$@"; do [ -f "$f" ] && return 0; done; return 1; }
           case "${{ runner.os }}" in
             macOS)
-              cp "$B"/dmg/*.dmg "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.dmg" ;;
+              cp "$B"/dmg/*.dmg "$N.dmg"
+              if sig "$B"/macos/*.app.tar.gz.sig; then
+                cp "$B"/macos/*.app.tar.gz "$N.app.tar.gz"
+                cp "$B"/macos/*.app.tar.gz.sig "$N.app.tar.gz.sig"
+              fi ;;
             Windows)
-              cp "$B"/nsis/*-setup.exe "dist/AurisWhisper-$VERSION-${{ matrix.slug }}-Setup.exe" ;;
+              cp "$B"/nsis/*-setup.exe "$N-Setup.exe"
+              if sig "$B"/nsis/*-setup.exe.sig; then cp "$B"/nsis/*-setup.exe.sig "$N-Setup.exe.sig"; fi ;;
             Linux)
-              cp "$B"/appimage/*.AppImage "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.AppImage"
-              cp "$B"/deb/*.deb "dist/AurisWhisper-$VERSION-${{ matrix.slug }}.deb" ;;
+              cp "$B"/appimage/*.AppImage "$N.AppImage"
+              cp "$B"/deb/*.deb "$N.deb"
+              if sig "$B"/appimage/*.AppImage.sig; then cp "$B"/appimage/*.AppImage.sig "$N.AppImage.sig"; fi ;;
           esac
           ls -la dist
 
@@ -250,10 +291,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # latest.json — по нему приложения узнают о новой версии и берут пакет
+      # обновления для своей платформы (вместе с подписью).
+      - name: Update manifest
+        run: |
+          python3 - <<'PY'
+          import json, os, datetime
+          tag = os.environ["GITHUB_REF_NAME"]; version = tag.lstrip("v")
+          base = f"https://github.com/${{ github.repository }}/releases/download/{tag}/"
+          files = {
+              "darwin-aarch64": f"AurisWhisper-{version}-macOS-AppleSilicon.app.tar.gz",
+              "darwin-x86_64": f"AurisWhisper-{version}-macOS-Intel.app.tar.gz",
+              "windows-x86_64": f"AurisWhisper-{version}-Windows-x64-Setup.exe",
+              "linux-x86_64": f"AurisWhisper-{version}-Linux-x86_64.AppImage",
+          }
+          platforms = {}
+          for key, name in files.items():
+              sig = os.path.join("dist", name + ".sig")
+              if os.path.exists(sig):
+                  platforms[key] = {"signature": open(sig).read().strip(), "url": base + name}
+          if not platforms:
+              print("no updater signatures — skipping latest.json"); raise SystemExit
+          notes = open("RELEASE_NOTES.md", encoding="utf-8").read() if os.path.exists("RELEASE_NOTES.md") else ""
+          manifest = {"version": version, "notes": notes,
+                      "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "platforms": platforms}
+          json.dump(manifest, open("dist/latest.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          print(json.dumps({k: v["url"] for k, v in platforms.items()}, indent=2))
+          PY
       - run: |
           cd dist
           sha256sum * > SHA256SUMS.txt
@@ -261,4 +331,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          name: Auris Whisper ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: dist/*

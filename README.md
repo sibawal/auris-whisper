@@ -38,6 +38,13 @@ No accounts, no uploads. Everything runs on your own computer.
   switch any time, delete the ones you don't need, or add your own model file.
 - **GPU acceleration**: Metal on Apple Silicon, Vulkan on Windows and Linux
   (NVIDIA, AMD, Intel). No GPU — it runs on the CPU, automatically.
+- **Who said what.** *Split by speaker* labels every line — “Speaker 1”,
+  “Speaker 2”… Click a speaker and give them a name: it replaces the label
+  throughout the text, including .txt files already saved. Runs on the CPU with
+  two small models (~34 MB, pyannote + 3D-Speaker) downloaded on first use.
+- **Updates itself.** At launch the app checks GitHub for a new version and
+  installs it with one click (macOS, Windows, Linux AppImage). Packages are
+  signed; the check can be turned off in *About*.
 - **Almost 30 recognition languages** or automatic detection.
 - **Interface in English or Russian**, switched in the top-right corner.
 - **Timestamps** on demand: `[00:12 → 00:19] the sentence`.
@@ -51,7 +58,8 @@ No accounts, no uploads. Everything runs on your own computer.
   and a re-run of any piece that derails.
 
 Nothing is a wrapper around a web service. Once a model is downloaded, no
-internet connection is needed at all.
+internet connection is needed at all — the only request the app makes on its own
+is the update check, which you can switch off.
 
 ## Download
 
@@ -130,8 +138,10 @@ with *Add a model file…*. Any whisper.cpp model works.
 | no GPU or no driver | CPU, automatically |
 
 If the GPU misbehaves, turn acceleration off in the models window and the CPU
-takes over. The bottom bar shows what is doing the work. x86-64 builds need a
-CPU with AVX2 (Intel Haswell 2013+ or AMD Ryzen/Excavator).
+takes over. The bottom bar shows what is doing the work. On x86-64 the engine is
+built for AVX2 (Intel Haswell 2013+, AMD Ryzen); on older processors (2nd/3rd-gen
+Core, Pentium, Celeron) the Windows and Linux builds switch to a bundled
+compatible copy on their own — it works, just slower.
 
 ## Build from source
 

@@ -9,6 +9,19 @@
 <body>
   <main class="app" id="app">
 
+    <!-- Обновление -->
+    <div class="update" id="updateBar" hidden>
+      <svg class="ico" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      <span id="updateText"></span>
+      <button class="link" id="updateNotesBtn" type="button" data-t="updateNotes">Что нового</button>
+      <div class="spacer"></div>
+      <div class="bar update-progress" id="updateProgress" hidden><div class="bar-fill" id="updateProgressFill"></div></div>
+      <button class="btn small primary" id="updateInstallBtn" type="button"></button>
+      <button class="icon-btn" id="updateClose" type="button" aria-label="×">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
     <!-- Настройки -->
     <header class="toolbar">
       <label class="field">
@@ -52,10 +65,19 @@
             <span data-t="dictate">Надиктовать</span>
           </button>
         </div>
-        <label class="mic" id="micWrap" hidden>
-          <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
-          <select id="micSelect" data-t-title="micLabel"></select>
-        </label>
+        <div class="row options">
+          <label class="mic" id="micWrap" hidden>
+            <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
+            <select id="micSelect" data-t-title="micLabel"></select>
+          </label>
+          <label class="check voices" data-t-title="diarizeHint">
+            <input type="checkbox" id="diarize">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.2A5 5 0 0 1 21 19"/></svg>
+            <span data-t="diarize">Разделять по голосам</span>
+          </label>
+          <select id="speakerCount" class="mini" data-t-title="speakerCountHint" hidden></select>
+          <span class="hint" id="diarizeStatus"></span>
+        </div>
         <p class="hint">mp3 · m4a · wav · flac · ogg · opus · mp4 · mov · mkv · webm</p>
       </div>
 
@@ -92,6 +114,13 @@
       <span class="mono muted" id="progressPct">0%</span>
       <span class="muted" id="queueInfo"></span>
       <button class="btn small" id="cancelBtn" type="button" data-t="cancel">Отмена</button>
+    </div>
+
+    <!-- Спикеры: нажать — дать имя, оно заменится во всём тексте -->
+    <div class="speakers" id="speakers" hidden>
+      <span class="muted" data-t="speakersLabel">Спикеры:</span>
+      <div class="speaker-chips" id="speakerChips"></div>
+      <span class="hint" data-t="speakersHint"></span>
     </div>
 
     <!-- Текст -->
@@ -159,11 +188,27 @@
       <p class="muted" id="aboutVersion"></p>
       <p id="aboutText"></p>
       <p class="muted small-text" id="aboutCredits"></p>
+      <div class="row center about-updates">
+        <label class="check"><input type="checkbox" id="checkUpdates"><span data-t="checkUpdates">Проверять обновления при запуске</span></label>
+        <button class="btn small" id="checkNowBtn" type="button" data-t="checkNow">Проверить сейчас</button>
+      </div>
+      <p class="muted small-text" id="updateCheckResult"></p>
       <div class="row center">
         <button class="btn" id="githubBtn" type="button">GitHub</button>
         <button class="btn primary" id="aboutClose" type="button">OK</button>
       </div>
     </div>
+  </dialog>
+
+  <!-- Что нового -->
+  <dialog class="sheet small" id="notesDialog">
+    <div class="sheet-head">
+      <div><h2 id="notesTitle" tabindex="-1" autofocus></h2></div>
+      <button class="icon-btn" id="notesClose" type="button" aria-label="×">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="notes" id="notesBody"></div>
   </dialog>
 
   <script src="i18n.js"></script>

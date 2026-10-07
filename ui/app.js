@@ -30,7 +30,13 @@ const S = {
   queue: "",
   stats: null,
   lastOnGpu: null,
+  diarizeReady: false,
+  speakers: [],    // {label, name} — номера сквозные на весь текст в окне
+  results: [],     // {name, header, segments, timestamps, savePath} — для переименования
+  update: null,    // найденное обновление
 };
+
+const SPEAKER_COLORS = ["#5b5ce6", "#e5484d", "#30a46c", "#f76b15", "#0090ff", "#ab4aba", "#d6409f", "#978365"];
 
 // ---------- Строки ----------
 
@@ -64,7 +70,8 @@ function bytes(n) {
 function baseName(path) { return path.split(/[\\/]/).pop(); }
 
 function modelName(id) {
-  return MODEL_TEXT[id]?.name ?? id;
+  const m = MODEL_TEXT[id];
+  return m?.[`name_${lang()}`] ?? m?.name ?? id;
 }
 
 // ---------- Отрисовка ----------
@@ -95,6 +102,9 @@ function applyStrings() {
   renderEngineInfo();
   if ($("modelsDialog").open) renderModels();
   refreshMics();
+  renderSpeakerCount();
+  renderDiarize();
+  renderUpdate();
 }
 
 function renderStatus() {
@@ -116,7 +126,7 @@ function renderEngineInfo() {
   const sys = S.system;
   if (!sys) return;
   const gpu = S.settings.useGpu && sys.gpuBackend !== "CPU" && S.lastOnGpu !== false ? sys.gpuBackend : "CPU";
-  $("engineInfo").textContent = gpu === "CPU" ? "CPU" : `⚡ ${gpu}`;
+  $("engineInfo").textContent = gpu === "CPU" ? (sys.compat ? t("cpuCompat") : "CPU") : `⚡ ${gpu}`;
   $("engineInfo").title = (gpu === "CPU" ? t("gpuNone") : sys.gpuDevices.join(", ")) + " — " + t("modelsTitle");
 }
 
@@ -170,6 +180,128 @@ function showMicAwareError(e) {
   }
 }
 
+// ---------- Текст из сегментов и спикеры ----------
+
+function speakerName(i) {
+  const sp = S.speakers[i];
+  return sp ? (sp.name || sp.label) : "";
+}
+
+/// Текст одного результата: с таймкодами — строка на фразу, без них —
+/// абзац на реплику спикера.
+function formatSegments(segs, timestamps) {
+  const label = (s) => (s.speaker != null ? `${speakerName(s.speaker)}: ` : "");
+  if (timestamps) {
+    return segs.map((s) => `[${timecode(s.start)} → ${timecode(s.end)}]  ${label(s)}${s.text}`).join("\n");
+  }
+  if (!segs.some((s) => s.speaker != null)) {
+    return segs.map((s) => s.text).join(" ").replace(/ {2,}/g, " ");
+  }
+  const turns = [];
+  for (const s of segs) {
+    const last = turns[turns.length - 1];
+    if (last && last.speaker === s.speaker) last.text += " " + s.text;
+    else turns.push({ speaker: s.speaker, text: s.text });
+  }
+  return turns.map((x) => label(x) + x.text).join("\n\n");
+}
+
+async function onResult(ev) {
+  // Номера спикеров сквозные: у второго файла — следующие после первого.
+  const base = S.speakers.length;
+  for (let i = 0; i < ev.speakers; i++) S.speakers.push({ label: t("speakerN", base + i + 1), name: "" });
+  const segments = ev.segments.map((x) => ({ ...x, speaker: x.speaker == null ? null : base + x.speaker }));
+  const r = { name: ev.name, header: ev.header, segments, timestamps: S.settings.timestamps, savePath: ev.savePath };
+  S.results.push(r);
+
+  const body = formatSegments(segments, r.timestamps);
+  appendText(r.header ? `=== ${r.name} ===\n${body}` : body);
+  renderSpeakers();
+
+  let saved = null;
+  if (r.savePath && body) {
+    try { await invoke("save_text", { path: r.savePath, text: body }); saved = r.savePath; S.lastSaved = saved; }
+    catch (e) { showError(String(e)); }
+  }
+  S.lastOnGpu = ev.onGpu;
+  renderEngineInfo();
+  const speed = ev.elapsed > 0 ? (ev.audioSeconds / ev.elapsed).toFixed(1) : "—";
+  setStatus(() => t("done", duration(ev.elapsed), speed)
+    + (ev.language ? t("langDetected", ev.language) : "")
+    + (ev.onGpu || S.system.gpuBackend === "CPU" ? "" : t("onCpu"))
+    + (saved ? t("savedTo", baseName(saved)) : ""));
+  renderBusy();
+}
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+/// Новое имя спикера заменяет старое везде: в окне (подписи реплик, в том числе
+/// с таймкодами) и в уже сохранённых .txt.
+async function renameSpeaker(i, raw) {
+  const sp = S.speakers[i];
+  if (!sp) return;
+  const before = speakerName(i);
+  const wanted = raw.trim().replace(/:/g, "");
+  const after = wanted || sp.label;
+  if (after === before) { renderSpeakers(); return; }
+  if (S.speakers.some((_, j) => j !== i && speakerName(j) === after)) {
+    showError(t("speakerNameTaken", after));
+    renderSpeakers();
+    return;
+  }
+  sp.name = wanted;
+  const area = $("transcript");
+  const re = new RegExp(`(^|\\n)((?:\\[[^\\]\\n]*\\]\\s+)?)${escapeRe(before)}:`, "g");
+  area.value = area.value.replace(re, (_, nl, ts) => `${nl}${ts}${after}:`);
+  renderSpeakers();
+  for (const r of S.results) {
+    if (r.savePath && r.segments.some((x) => x.speaker === i)) {
+      try { await invoke("save_text", { path: r.savePath, text: formatSegments(r.segments, r.timestamps) }); }
+      catch (e) { showError(String(e)); }
+    }
+  }
+}
+
+function renderSpeakers() {
+  const box = $("speakerChips");
+  box.innerHTML = "";
+  $("speakers").hidden = S.speakers.length === 0;
+  S.speakers.forEach((sp, i) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "speaker-chip";
+    chip.innerHTML = `<i style="background:${SPEAKER_COLORS[i % SPEAKER_COLORS.length]}"></i><span></span>
+      <svg class="ico" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/></svg>`;
+    chip.querySelector("span").textContent = speakerName(i);
+    chip.addEventListener("click", () => editSpeaker(chip, i));
+    box.appendChild(chip);
+  });
+}
+
+function editSpeaker(chip, i) {
+  const span = chip.querySelector("span");
+  const input = document.createElement("input");
+  input.value = S.speakers[i].name;
+  input.placeholder = S.speakers[i].label;
+  span.replaceWith(input);
+  chip.querySelector("svg")?.remove();
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    if (save) renameSpeaker(i, input.value); else renderSpeakers();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+
 function appendText(text) {
   if (!text) return;
   const area = $("transcript");
@@ -190,9 +322,18 @@ function hasModel() {
   return !!S.settings.model && S.installed.some((m) => m.id === S.settings.model);
 }
 
+/// Включено разделение по голосам, а модели ещё качаются — ждём.
+function diarizeBlocked() {
+  if (!S.settings.diarize || S.diarizeReady) return false;
+  showError(t("diarizeWait"));
+  if (!S.downloading.has("diarization")) startDiarizeDownload();
+  return true;
+}
+
 async function transcribe(paths) {
   if (!paths.length || S.busy || S.recording) return;
   if (!hasModel()) { openModels(); return; }
+  if (diarizeBlocked()) return;
   hideError();
   try {
     S.busy = true; renderBusy(); setProgress(0, true);
@@ -226,6 +367,10 @@ function onJob(ev) {
       S.audioSeconds = ev.audioSeconds;
       if (ev.phase === "decoding") setStatus(() => t("reading", ev.name));
       else if (ev.phase === "loading") setStatus(() => t("loadingModel"));
+      else if (ev.phase === "diarizing") {
+        setStatus(() => ev.recording ? t("diarizingRec") : t("diarizing", ev.name));
+        setProgress(0);
+      }
       else if (ev.phase === "transcribing") {
         setStatus(() => ev.recording ? t("transcribingRec", timecode(ev.audioSeconds)) : t("transcribing", ev.name, timecode(ev.audioSeconds)));
         setProgress(0);
@@ -234,20 +379,9 @@ function onJob(ev) {
     case "progress":
       setProgress(ev.value);
       break;
-    case "result": {
-      appendText(ev.header ? `=== ${ev.name} ===\n${ev.text}` : ev.text);
-      if (ev.savedTo) S.lastSaved = ev.savedTo;
-      S.lastOnGpu = ev.onGpu;
-      renderEngineInfo();
-      const speed = ev.elapsed > 0 ? (ev.audioSeconds / ev.elapsed).toFixed(1) : "—";
-      const savedName = ev.savedTo ? baseName(ev.savedTo) : null;
-      setStatus(() => t("done", duration(ev.elapsed), speed)
-        + (ev.language ? t("langDetected", ev.language) : "")
-        + (ev.onGpu || S.system.gpuBackend === "CPU" ? "" : t("onCpu"))
-        + (savedName ? t("savedTo", savedName) : ""));
-      renderBusy();
+    case "result":
+      onResult(ev);
       break;
-    }
     case "error":
       if (ev.noModel) {
         openModels();
@@ -289,6 +423,7 @@ async function toggleRecording() {
   }
   if (S.busy) return;
   if (!hasModel()) { openModels(); return; }
+  if (diarizeBlocked()) return;
   hideError();
   try {
     await invoke("start_recording");
@@ -372,6 +507,15 @@ function renderModels() {
     }));
   }
 
+  const extras = document.createElement("div");
+  extras.className = "section-label";
+  extras.textContent = t("extras");
+  list.appendChild(extras);
+  list.appendChild(modelCard({
+    id: "diarization", size: 34274077, desc: MODEL_TEXT.diarization[lang()],
+    installed: S.diarizeReady, custom: true, extra: true,
+  }));
+
   const custom = S.installed.filter((m) => m.custom);
   if (custom.length) {
     const label = document.createElement("div");
@@ -386,7 +530,7 @@ function renderModels() {
 
 function modelCard(m) {
   const el = document.createElement("div");
-  const active = S.settings.model === m.id && m.installed;
+  const active = !m.extra && S.settings.model === m.id && m.installed;
   el.className = "model" + (active ? " active" : "") + (m.recommended ? " recommended" : "");
 
   const badges = [];
@@ -410,7 +554,7 @@ function modelCard(m) {
   if (downloading) {
     html += `<button class="btn small" data-act="cancel">${esc(t("cancel"))}</button>`;
   } else if (m.installed) {
-    if (!active) html += `<button class="btn small primary" data-act="use">${esc(t("use"))}</button>`;
+    if (!active && !m.extra) html += `<button class="btn small primary" data-act="use">${esc(t("use"))}</button>`;
     html += `<button class="icon-btn" data-act="delete" title="${esc(t("delete"))}">
       <svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`;
   } else {
@@ -444,7 +588,8 @@ async function modelAction(act, m) {
       delete S.dlErrors[m.id];
       S.downloading.add(m.id);
       renderModels();
-      await invoke("download_model", { id: m.id });
+      if (m.id === "diarization") await invoke("download_diarization");
+      else await invoke("download_model", { id: m.id });
     } else if (act === "cancel") {
       await invoke("cancel_download", { id: m.id });
     } else if (act === "use") {
@@ -476,6 +621,8 @@ function onModelsChanged(state) {
   const before = new Set(S.installed.map((m) => m.id));
   S.installed = state.installed;
   S.downloading = new Set(state.downloading);
+  S.diarizeReady = state.diarizeReady;
+  renderDiarize();
   // Только что скачанная модель становится активной, если активной ещё нет.
   const fresh = S.installed.find((m) => !before.has(m.id));
   if (!hasModel()) {
@@ -490,11 +637,108 @@ function onModelsChanged(state) {
 
 function onDownloadProgress(p) {
   S.dl[p.id] = p;
+  if (p.id === "diarization") renderDiarize();
   if (p.phase === "error") {
     S.dlErrors[p.id] = p.error;
     S.downloading.delete(p.id);
   }
   if ($("modelsDialog").open) renderModels();
+}
+
+// ---------- Разделение по голосам ----------
+
+function renderDiarize() {
+  const on = !!S.settings?.diarize;
+  $("diarize").checked = on;
+  $("speakerCount").hidden = !on;
+  const p = S.dl.diarization;
+  let note = "";
+  if (on && !S.diarizeReady) {
+    if (S.downloading.has("diarization") && p && p.total) note = t("diarizeDownloading", Math.floor((p.downloaded / p.total) * 100));
+    else if (S.dlErrors.diarization) note = t("diarizeFailed", S.dlErrors.diarization);
+  }
+  $("diarizeStatus").textContent = note;
+}
+
+function renderSpeakerCount() {
+  const sel = $("speakerCount");
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = ""; auto.textContent = t("speakersAuto");
+  sel.appendChild(auto);
+  for (let n = 2; n <= 8; n++) {
+    const o = document.createElement("option");
+    o.value = String(n); o.textContent = t("speakersCount", n);
+    sel.appendChild(o);
+  }
+  sel.value = S.settings.speakers ? String(S.settings.speakers) : "";
+}
+
+async function startDiarizeDownload() {
+  delete S.dlErrors.diarization;
+  S.downloading.add("diarization");
+  renderDiarize();
+  try { await invoke("download_diarization"); }
+  catch (e) { S.dlErrors.diarization = String(e); S.downloading.delete("diarization"); renderDiarize(); }
+}
+
+// ---------- Обновления ----------
+
+async function checkUpdate(manual = false) {
+  try {
+    const info = await invoke("check_update");
+    if (info) {
+      S.update = info;
+      renderUpdate();
+    }
+    if (manual) $("updateCheckResult").textContent = info ? t("updateAvailable", info.version, info.current) : t("upToDate");
+  } catch (e) {
+    if (manual) $("updateCheckResult").textContent = t("updateCheckFailed");
+  }
+}
+
+function renderUpdate() {
+  const u = S.update;
+  $("updateBar").hidden = !u;
+  if (!u) return;
+  $("updateText").textContent = t("updateAvailable", u.version, u.current);
+  $("updateInstallBtn").textContent = u.canInstall ? t("updateInstall") : t("updateDownload");
+  $("updateNotesBtn").hidden = !u.notes;
+}
+
+async function installUpdate() {
+  const u = S.update;
+  if (!u) return;
+  if (!u.canInstall) { invoke("open_url", { url: u.page }); return; }
+  if (S.busy || S.recording) return;
+  $("updateInstallBtn").disabled = true;
+  $("updateProgress").hidden = false;
+  $("updateText").textContent = t("updateDownloading", "");
+  try {
+    await invoke("install_update");
+    // Сюда обычно не доходим: после установки приложение перезапускается.
+  } catch (e) {
+    $("updateProgress").hidden = true;
+    $("updateInstallBtn").disabled = false;
+    showError(t("updateFailed", String(e)));
+    renderUpdate();
+  }
+}
+
+function onUpdateProgress(p) {
+  const pct = p.total ? Math.floor((p.downloaded / p.total) * 100) : null;
+  $("updateProgressFill").style.width = pct != null ? `${pct}%` : "30%";
+  $("updateText").textContent = pct != null && pct >= 100 ? t("updateInstalling")
+    : t("updateDownloading", pct != null ? `${pct}%` : bytes(p.downloaded));
+}
+
+function showNotes() {
+  const u = S.update;
+  if (!u) return;
+  $("notesTitle").textContent = t("whatsNew", u.version);
+  // Markdown показываем как текст, убрав разметку.
+  $("notesBody").textContent = u.notes.replace(/\*\*|`|^#+\s*/gm, "").replace(/\|/g, " ").replace(/^\s*-{3,}.*$/gm, "");
+  $("notesDialog").showModal();
 }
 
 // ---------- Полоса нагрузки ----------
@@ -524,6 +768,8 @@ function onStats(s) {
 // ---------- О программе ----------
 
 function openAbout() {
+  $("checkUpdates").checked = S.settings.checkUpdates !== false;
+  $("updateCheckResult").textContent = "";
   $("aboutVersion").textContent = t("aboutVersion", S.system.version, S.system.whisperVersion);
   $("aboutText").textContent = t("aboutText");
   $("aboutCredits").textContent = t("aboutCredits");
@@ -567,6 +813,9 @@ function wire() {
   $("clearBtn").addEventListener("click", () => {
     $("transcript").value = "";
     S.lastSaved = null;
+    S.speakers = [];
+    S.results = [];
+    renderSpeakers();
     hideError();
     setStatus(() => t("ready"));
     renderBusy();
@@ -613,6 +862,24 @@ function wire() {
   });
 
   listen("job", (e) => onJob(e.payload));
+  $("diarize").addEventListener("change", (e) => {
+    S.settings.diarize = e.target.checked;
+    saveSettings();
+    if (S.settings.diarize && !S.diarizeReady && !S.downloading.has("diarization")) startDiarizeDownload();
+    renderDiarize();
+  });
+  $("speakerCount").addEventListener("change", (e) => {
+    S.settings.speakers = e.target.value ? Number(e.target.value) : null;
+    saveSettings();
+  });
+  $("updateInstallBtn").addEventListener("click", installUpdate);
+  $("updateNotesBtn").addEventListener("click", showNotes);
+  $("updateClose").addEventListener("click", () => { $("updateBar").hidden = true; });
+  $("notesClose").addEventListener("click", () => $("notesDialog").close());
+  $("checkUpdates").addEventListener("change", (e) => { S.settings.checkUpdates = e.target.checked; saveSettings(); });
+  $("checkNowBtn").addEventListener("click", () => { $("updateCheckResult").textContent = "…"; checkUpdate(true); });
+  listen("update-progress", (e) => onUpdateProgress(e.payload));
+
   $("micSelect").addEventListener("change", (e) => { S.settings.mic = e.target.value || null; saveSettings(); });
   $("micSelect").addEventListener("focus", refreshMics);
   window.addEventListener("focus", () => { if (!S.recording) refreshMics(); });
@@ -653,6 +920,7 @@ async function start() {
   S.downloading = new Set(b.downloading);
   S.system = b.system;
   S.modelsDir = b.modelsDir;
+  S.diarizeReady = b.diarizeReady;
 
   // Первый запуск: язык интерфейса — по языку системы
   if (!S.settings.uiLang) {
@@ -675,6 +943,9 @@ async function start() {
 
   if (!hasModel()) openModels();
   else if (b.pendingFiles.length) transcribe(b.pendingFiles);
+  if (S.settings.diarize && !S.diarizeReady && !S.downloading.has("diarization")) startDiarizeDownload();
+  // Проверка обновлений — чуть позже, чтобы не мешать запуску.
+  if (S.settings.checkUpdates !== false) setTimeout(() => checkUpdate(false), 3000);
 }
 
 start().catch((e) => {

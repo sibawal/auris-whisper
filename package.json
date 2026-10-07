@@ -1,7 +1,7 @@
 {
   "name": "auris-whisper",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Offline speech-to-text for macOS, Windows and Linux",
   "license": "MIT",
   "scripts": {

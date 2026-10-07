@@ -59,7 +59,7 @@ fn main() {
         println!("ОШИБКА загрузки модели: {}", e.message());
         std::process::exit(1);
     }
-    match eng.transcribe(&samples, args.get(3).map(String::as_str), &mut |_| {}) {
+    match eng.transcribe(&samples, args.get(3).map(String::as_str), false, &mut |_| {}) {
         Ok(segs) => println!("текст: {}", engine::plain_text(&segs)),
         Err(e) => {
             println!("ОШИБКА распознавания: {}", e.message());

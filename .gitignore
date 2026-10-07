@@ -15,3 +15,6 @@ test-model/
 # Локальное
 .DS_Store
 *.zip
+
+# Совместимая копия движка (собирается в CI)
+src-tauri/binaries/

@@ -51,6 +51,47 @@ pub const CATALOG: &[CatalogModel] = &[
         sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2", quality: 5, speed: 1, ram_gb: 4.7 },
 ];
 
+/// Файл, который можно скачать: модель whisper или вспомогательная модель.
+#[derive(Clone)]
+pub struct RemoteFile {
+    pub id: &'static str,
+    pub file: &'static str,
+    pub size: u64,
+    pub sha256: &'static str,
+    pub url: &'static str,
+}
+
+impl CatalogModel {
+    pub fn remote(&self) -> RemoteFile {
+        RemoteFile { id: self.id, file: self.file, size: self.size, sha256: self.sha256, url: "" }
+    }
+}
+
+/// Разделение по голосам: сегментация pyannote 3.0 (MIT) и голосовые отпечатки
+/// 3D-Speaker CAM++, обучены на китайской и английской речи, но голоса различают
+/// независимо от языка (Apache-2.0).
+pub const DIARIZE_SEGMENTATION: RemoteFile = RemoteFile {
+    id: "diarize-segmentation",
+    file: "pyannote-segmentation-3.0.onnx",
+    size: 5_992_913,
+    sha256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+    url: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
+};
+pub const DIARIZE_EMBEDDING: RemoteFile = RemoteFile {
+    id: "diarize-embedding",
+    file: "3dspeaker-campplus-zh-en-advanced.onnx",
+    size: 28_281_164,
+    sha256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+};
+
+/// Установлены ли обе модели разделения по голосам.
+pub fn diarize_ready(dir: &Path) -> bool {
+    [DIARIZE_SEGMENTATION, DIARIZE_EMBEDDING]
+        .iter()
+        .all(|f| std::fs::metadata(dir.join(f.file)).map(|m| m.len() == f.size).unwrap_or(false))
+}
+
 pub fn find(id: &str) -> Option<&'static CatalogModel> {
     CATALOG.iter().find(|m| m.id == id)
 }
@@ -165,7 +206,7 @@ impl Downloads {
 
 /// Качает модель в `dir`. Прогресс отдаётся не чаще пяти раз в секунду.
 pub async fn download(
-    model: &CatalogModel,
+    model: &RemoteFile,
     dir: &Path,
     cancel: Arc<AtomicBool>,
     mut report: impl FnMut(DownloadProgress),
@@ -211,7 +252,7 @@ pub async fn download(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let url = format!("{HF_BASE}{}", model.file);
+    let url = if model.url.is_empty() { format!("{HF_BASE}{}", model.file) } else { model.url.to_string() };
     let mut req = client.get(&url);
     if have > 0 {
         req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));

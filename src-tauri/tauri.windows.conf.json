@@ -6,7 +6,10 @@
       "windows-runtime/vcruntime140.dll": "vcruntime140.dll",
       "windows-runtime/vcruntime140_1.dll": "vcruntime140_1.dll",
       "windows-runtime/msvcp140.dll": "msvcp140.dll",
-      "windows-runtime/vulkan-1.dll": "vulkan-1.dll"
+      "windows-runtime/vulkan-1.dll": "vulkan-1.dll",
+      "windows-runtime/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "windows-runtime/onnxruntime.dll": "onnxruntime.dll",
+      "windows-runtime/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll"
     }
   }
 }

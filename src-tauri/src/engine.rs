@@ -21,6 +21,19 @@ pub struct Segment {
     pub start: f64, // секунды
     pub end: f64,
     pub text: String,
+    /// Номер спикера (с нуля), если запись разделяли по голосам.
+    pub speaker: Option<usize>,
+    /// Слова с временем — нужны только чтобы разрезать сегмент по спикерам.
+    #[serde(skip)]
+    pub words: Vec<Word>,
+}
+
+/// Слово (точнее, набор токенов до следующего пробела) с временем в секундах.
+#[derive(Clone, Debug)]
+pub struct Word {
+    pub start: f64,
+    pub end: f64,
+    pub bytes: Vec<u8>,
 }
 
 /// Чем считаем: показываем в полосе нагрузки.
@@ -187,6 +200,7 @@ impl Engine {
         &mut self,
         samples: &[f32],
         language: Option<&str>,
+        words: bool,
         on_progress: &mut dyn FnMut(f64),
     ) -> Result<Vec<Segment>, EngineError> {
         self.last_lang = None;
@@ -194,7 +208,7 @@ impl Engine {
         let rate = SAMPLE_RATE as usize;
         let chunk_target = 5 * 60 * rate; // куски примерно по 5 минут
         if samples.len() <= chunk_target + 60 * rate {
-            return self.transcribe_chunk(samples, language, 0.0, on_progress);
+            return self.transcribe_chunk(samples, language, 0.0, words, on_progress);
         }
 
         let bounds = chunk_bounds(samples, chunk_target, rate);
@@ -208,18 +222,28 @@ impl Engine {
             let span = 1.0 / n;
             let mut sub = |p: f64| on_progress(base + p * span);
 
-            let mut segments = self.transcribe_chunk(piece, language, 0.0, &mut sub)?;
+            let mut segments = self.transcribe_chunk(piece, language, 0.0, words, &mut sub)?;
 
             // Кусок сорвался в повтор — пробуем ещё раз, с другой температурой.
             if longest_repeat_run(&segments) >= 5 {
-                if let Ok(retry) = self.transcribe_chunk(piece, language, 0.4, &mut sub) {
+                if let Ok(retry) = self.transcribe_chunk(piece, language, 0.4, words, &mut sub) {
                     if longest_repeat_run(&retry) < longest_repeat_run(&segments) {
                         segments = retry;
                     }
                 }
             }
 
-            out.extend(segments.into_iter().map(|s| Segment { start: s.start + offset, end: s.end + offset, text: s.text }));
+            out.extend(segments.into_iter().map(|s| Segment {
+                start: s.start + offset,
+                end: s.end + offset,
+                text: s.text,
+                speaker: None,
+                words: s
+                    .words
+                    .into_iter()
+                    .map(|w| Word { start: w.start + offset, end: w.end + offset, bytes: w.bytes })
+                    .collect(),
+            }));
         }
         Ok(collapse_repeats(out, 3))
     }
@@ -229,6 +253,7 @@ impl Engine {
         samples: &[f32],
         language: Option<&str>,
         temperature: f32,
+        words: bool,
         on_progress: &mut dyn FnMut(f64),
     ) -> Result<Vec<Segment>, EngineError> {
         let loaded = self.loaded.as_mut().ok_or_else(|| EngineError::Failed("model is not loaded".into()))?;
@@ -250,6 +275,8 @@ impl Engine {
         params.set_entropy_thold(2.4); // сорвался в повтор → перевыбор с другой температурой
         params.set_logprob_thold(-1.0);
         params.set_no_speech_thold(0.6);
+        // Время отдельных токенов — чтобы резать фразы на реплики по спикерам.
+        params.set_token_timestamps(words);
 
         match language {
             Some(lang) if lang != "auto" => params.set_language(Some(lang)),
@@ -290,6 +317,7 @@ impl Engine {
         }
         result.map_err(|e| EngineError::Failed(tr("Ошибка распознавания: ", "Transcription failed: ") + &e.to_string()))?;
 
+        let eot = loaded._ctx.token_eot();
         let state = &loaded.state;
         let lang_id = state.full_lang_id_from_state();
         if lang_id >= 0 {
@@ -302,14 +330,41 @@ impl Engine {
             if text.is_empty() {
                 continue;
             }
-            out.push(Segment {
-                start: seg.start_timestamp() as f64 / 100.0,
-                end: seg.end_timestamp() as f64 / 100.0,
-                text,
-            });
+            let start = seg.start_timestamp() as f64 / 100.0;
+            let end = seg.end_timestamp() as f64 / 100.0;
+            let words = if words { segment_words(&seg, eot, start, end) } else { Vec::new() };
+            out.push(Segment { start, end, text, speaker: None, words });
         }
         Ok(out)
     }
+}
+
+/// Слова сегмента со временем на шкале исходной записи.
+///
+/// whisper.cpp пересчитывает с учётом детектора речи только границы сегментов,
+/// а время токенов остаётся на «сжатой» шкале без пауз. Поэтому положение
+/// токена внутри сегмента берём относительное и растягиваем на настоящие границы.
+fn segment_words(seg: &whisper_rs::WhisperSegment<'_>, eot: i32, start: f64, end: f64) -> Vec<Word> {
+    let mut tokens: Vec<(f64, f64, Vec<u8>)> = Vec::new();
+    for i in 0..seg.n_tokens() {
+        let Some(tok) = seg.get_token(i) else { continue };
+        if tok.token_id() >= eot {
+            continue; // служебные: начало, метки времени, конец
+        }
+        let data = tok.token_data();
+        let bytes = tok.to_bytes().map(|b| b.to_vec()).unwrap_or_default();
+        if bytes.is_empty() {
+            continue;
+        }
+        tokens.push((data.t0 as f64, data.t1.max(data.t0) as f64, bytes));
+    }
+    let (Some(first), Some(last)) = (tokens.first().map(|t| t.0), tokens.last().map(|t| t.1)) else {
+        return Vec::new();
+    };
+    let span = (last - first).max(1.0);
+    let len = (end - start).max(0.0);
+    let at = |t: f64| start + ((t - first) / span).clamp(0.0, 1.0) * len;
+    crate::diarize::words_from_tokens(tokens.into_iter().map(|(a, b, bytes)| (at(a), at(b), bytes)).collect())
 }
 
 /// Границы кусков: режем по самому тихому месту рядом с целевой точкой,
@@ -421,7 +476,7 @@ mod tests {
     use super::*;
 
     fn seg(t: &str) -> Segment {
-        Segment { start: 0.0, end: 1.0, text: t.into() }
+        Segment { start: 0.0, end: 1.0, text: t.into(), speaker: None, words: Vec::new() }
     }
 
     #[test]
