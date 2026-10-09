@@ -106,6 +106,11 @@ jobs:
         shell: pwsh
         run: ./scripts/windows-runtime.ps1
 
+      - name: sherpa-onnx libraries (macOS, Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/sherpa-libs.sh
+
       - name: LLVM for bindgen (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -155,21 +160,39 @@ jobs:
           set -o pipefail
           G=https://huggingface.co/csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16/resolve/main
           T=https://huggingface.co/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main
-          mkdir -p test-ru-models/gigaam test-ru-models/t-one
+          mkdir -p test-ru-models/gigaam test-ru-models/t-one test-ru-models/diarize
           for f in encoder.int8.onnx decoder.onnx joiner.onnx tokens.txt; do
             [ -f test-ru-models/gigaam/$f ] || curl -sSL --fail -o test-ru-models/gigaam/$f "$G/$f"
           done
           for f in model.onnx tokens.txt; do
             [ -f test-ru-models/t-one/$f ] || curl -sSL --fail -o test-ru-models/t-one/$f "$T/$f"
           done
+          D=test-ru-models/diarize
+          [ -f $D/pyannote-segmentation-3.0.onnx ] || curl -sSL --fail -o $D/pyannote-segmentation-3.0.onnx https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx
+          [ -f $D/3dspeaker-campplus-zh-en-advanced.onnx ] || curl -sSL --fail -o $D/3dspeaker-campplus-zh-en-advanced.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
+          [ "$RUNNER_OS" = "Linux" ] && { sudo apt-get install -y gdb > /dev/null 2>&1 || true; }
           BIN=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/examples/transcribe
-          for m in gigaam t-one; do
-            echo "::group::$m"
-            "$BIN" test-ru-models/$m tests/audio/ru_speech.m4a 2>&1 | tee out.txt | tee -a ci.log
+          A=tests/audio/ru_speech.m4a
+          failed=""
+          run() { # имя, аргументы
+            local name=$1; shift
+            echo "::group::$name"
+            if "$BIN" "$@" 2>&1 | tee out.txt | tee -a ci.log && grep -q "роверк" out.txt; then
+              grep "от реального" out.txt | sed "s/^/::notice title=$name (${{ matrix.slug }})::/" || true
+            else
+              failed="$failed $name"
+              echo "::error::$name failed"
+              # Трассировка падения — чтобы было видно, в какой библиотеке
+              if command -v gdb > /dev/null; then
+                gdb -batch -ex run -ex bt --args "$BIN" "$@" 2>&1 | tail -40 | tee -a ci.log
+              fi
+            fi
             echo "::endgroup::"
-            grep -q "роверк" out.txt || { echo "::error::$m: no expected text"; exit 1; }
-            grep "от реального" out.txt | sed "s/^/::notice title=$m (${{ matrix.slug }})::/" || true
-          done
+          }
+          run diarize-whisper test-model/ggml-tiny.bin $A ru --diarize $D 2
+          run t-one test-ru-models/t-one $A
+          run gigaam test-ru-models/gigaam $A
+          [ -z "$failed" ] || { echo "::error::failed:$failed"; exit 1; }
 
       # Видео: на macOS и Windows проверяем именно системный декодер (AVFoundation,
       # Media Foundation) без подстраховки ffmpeg; на Linux — запасной путь через ffmpeg.
@@ -305,7 +328,7 @@ jobs:
           enc() { sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-60000; }
           errs=$( { grep -E "error(\[E[0-9]+\])?:|error:|Error:|error C[0-9]{4}|error MSB|CMake Error|No CMAKE_|FAILED|fatal|LNK[0-9]{4}|undefined reference|cannot find|not found|panicked" ci.log || true; } | grep -v "^warning" | tail -n 60 | enc) || true
           echo "::error title=Errors (${{ matrix.slug }})::${errs}"
-          echo "::error title=Log tail (${{ matrix.slug }})::$(tail -n 60 ci.log | enc)"
+          echo "::error title=Log tail (${{ matrix.slug }})::$(tail -n 150 ci.log | enc)"
 
       - uses: actions/upload-artifact@v4
         with:
