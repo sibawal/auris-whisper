@@ -6,6 +6,8 @@ dist/
 
 # DLL для Windows-установщика: их кладёт scripts/windows-runtime.ps1
 src-tauri/windows-runtime/
+# Библиотеки sherpa-onnx для Linux-пакетов: их кладёт scripts/sherpa-libs.sh
+src-tauri/linux-runtime/
 
 # Модели не храним в репозитории — приложение скачивает их само
 *.bin

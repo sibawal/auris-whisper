@@ -291,6 +291,22 @@ jobs:
           tail -n 25 launch.log
           cat launch.log >> ci.log
           [ $code -eq 124 ] || { echo "::error::AppImage exited early with code $code"; exit 1; }
+          # Обе копии движка (обычная и совместимая) находят библиотеки sherpa-onnx
+          # и в AppImage, и в .deb.
+          rm -rf squashfs-root deb-root
+          "$APP" --appimage-extract > /dev/null
+          DEB=$(ls ${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/bundle/deb/*.deb)
+          dpkg -x "$DEB" deb-root
+          # Прячем исходные .so и папку сборки, чтобы ldd не нашёл их по абсолютному пути.
+          mv src-tauri/linux-runtime linux-runtime.off
+          mv "$SHERPA_ONNX_LIB_DIR" "$SHERPA_ONNX_LIB_DIR.off" 2>/dev/null || true
+          bad=0
+          for b in squashfs-root/usr/bin/* deb-root/usr/bin/*; do
+            echo "== $b"; ldd "$b" | grep -E "sherpa|onnxruntime|not found" | tee -a ci.log
+            if ldd "$b" | grep -q "not found"; then echo "::error::$b: missing libraries"; bad=1; fi
+          done
+          mv linux-runtime.off src-tauri/linux-runtime
+          [ $bad -eq 0 ]
 
       - name: Collect installers
         shell: bash

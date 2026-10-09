@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/auris-whisper/libsherpa-onnx-c-api.so": "linux-runtime/libsherpa-onnx-c-api.so",
+          "/usr/lib/auris-whisper/libonnxruntime.so": "linux-runtime/libonnxruntime.so"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/lib/auris-whisper/libsherpa-onnx-c-api.so": "linux-runtime/libsherpa-onnx-c-api.so",
+          "/usr/lib/auris-whisper/libonnxruntime.so": "linux-runtime/libonnxruntime.so"
+        }
+      }
+    }
+  }
+}

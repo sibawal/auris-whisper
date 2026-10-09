@@ -81,10 +81,13 @@ windows = { version = "0.61", features = [
 # Разделение по голосам (диаризация): pyannote-сегментация + голосовые отпечатки.
 # На Windows — DLL-сборка: статические библиотеки там собраны со статическим
 # рантаймом C++ (/MT), а whisper.cpp — с динамическим (/MD), вместе не линкуются.
-[target.'cfg(not(target_os = "windows"))'.dependencies]
+# macOS — статически. Windows и Linux — отдельными библиотеками: на Windows
+# готовые статические собраны с /MT (у whisper.cpp /MD), а на Linux — со старым
+# ABI std::string, и в одном бинарнике с остальным кодом падают на free().
+[target.'cfg(target_os = "macos")'.dependencies]
 sherpa-onnx-sys = "=1.13.8"
 
-[target.'cfg(target_os = "windows")'.dependencies.sherpa-onnx-sys]
+[target.'cfg(not(target_os = "macos"))'.dependencies.sherpa-onnx-sys]
 version = "=1.13.8"
 default-features = false
 features = ["shared"]
