@@ -36,6 +36,10 @@ No accounts, no uploads. Everything runs on your own computer.
 - **Pick a model, from tiny to the most accurate.** Models are not baked into the
   installer: choose one after installing and it downloads once. Keep several,
   switch any time, delete the ones you don't need, or add your own model file.
+- **Dedicated models for Russian speech** — GigaAM v3 by Sber and T-One by
+  T-Bank. If your recordings are in Russian only, they are more accurate than
+  Whisper and several times faster even on the CPU. GigaAM adds punctuation and
+  writes numbers as digits.
 - **GPU acceleration**: Metal on Apple Silicon, Vulkan on Windows and Linux
   (NVIDIA, AMD, Intel). No GPU — it runs on the CPU, automatically.
 - **Who said what.** *Split by speaker* labels every line — “Speaker 1”,
@@ -116,7 +120,21 @@ computer. Switch or download another one with the model button at the top.
 For reference: on an Apple M4, Large v3 Turbo · compact transcribes 7.5 minutes
 of speech in 32 seconds (×14 real time).
 
-Models come from [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp);
+### Russian speech only
+
+| Model | Size | For |
+|---|---|---|
+| **GigaAM v3** ★ | 221 MB | the most accurate for Russian: punctuation, capitals, numbers as digits |
+| T-One | 138 MB | calls and noisy recordings; no punctuation |
+
+Both run on the CPU and need no GPU: on an Apple M4, GigaAM v3 transcribes 17
+minutes of speech in 54 seconds (×19) — faster than Whisper on the GPU. They do
+not understand other languages, so while one of them is selected the recognition
+language is locked to Russian. Pick Russian with a Whisper model and the app
+suggests trying them.
+
+Whisper models come from [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp),
+the Russian ones from [the sherpa-onnx project](https://huggingface.co/csukuangfj);
 downloads resume where they stopped and are verified with SHA-256. They live in:
 
 | System | Models folder |
@@ -192,6 +210,9 @@ engine is [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 |---|---|
 | `src-tauri/src/audio.rs` | any container → 16 kHz mono: Symphonia + libopus, streaming resampler |
 | `src-tauri/src/engine.rs` | whisper.cpp via whisper-rs: chunking, voice detection, loop protection |
+| `src-tauri/src/ru_asr.rs` | GigaAM v3 and T-One via sherpa-onnx: splitting at pauses, word timing |
+| `src-tauri/src/diarize.rs` | speaker separation (pyannote + 3D-Speaker via sherpa-onnx) |
+| `src-tauri/src/updates.rs` | over-the-air updates |
 | `src-tauri/src/models.rs` | model catalog, resumable downloads, SHA-256 check |
 | `src-tauri/src/recorder.rs` | microphone capture (CoreAudio / WASAPI / ALSA) |
 | `src-tauri/src/monitor.rs` | CPU and memory; GPU via IOKit / PDH / sysfs |
@@ -206,7 +227,10 @@ Version 1.x — the native Swift app for macOS only — lives on in git history
 MIT — see [LICENSE](LICENSE) ([перевод на русский](LICENSE.ru.md)). Use it, change it, ship it.
 
 Built on [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and ggml (MIT),
-[Whisper](https://github.com/openai/whisper) models by OpenAI (MIT), Silero VAD (MIT),
+[Whisper](https://github.com/openai/whisper) models by OpenAI (MIT),
+[GigaAM](https://github.com/salute-developers/GigaAM) by Sber (MIT),
+[T-One](https://github.com/voicekit-team/T-one) by T-Bank (Apache-2.0),
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0), Silero VAD (MIT),
 Tauri (MIT/Apache-2.0), Symphonia (MPL-2.0) and libopus (BSD). Full list in
 [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
 

@@ -13,6 +13,21 @@ whisper-rs — © Niko and contributors — Unlicense
      https://huggingface.co/ggerganov/whisper.cpp)
 Silero VAD (ggml-silero-v5.1.2.bin, внутри приложения / bundled) — © Silero Team — MIT
     https://github.com/snakers4/silero-vad
+sherpa-onnx — © Xiaomi Corporation and contributors (k2-fsa) — Apache-2.0
+    https://github.com/k2-fsa/sherpa-onnx
+ONNX Runtime — © Microsoft Corporation — MIT
+    https://github.com/microsoft/onnxruntime
+
+Модели, которые скачиваются по выбору пользователя / Models downloaded on demand
+(перевод в ONNX — проект sherpa-onnx / ONNX conversion by the sherpa-onnx project):
+GigaAM v3 — © GigaChat Team (Sber) — MIT
+    https://github.com/salute-developers/GigaAM
+T-One — © T-Software DC (T-Bank) — Apache-2.0
+    https://github.com/voicekit-team/T-one
+pyannote segmentation 3.0 (разделение по голосам / speaker separation) — © CNRS, Hervé Bredin — MIT
+    https://huggingface.co/pyannote/segmentation-3.0
+3D-Speaker CAM++ (голосовые отпечатки / speaker embeddings) — © Alibaba (Speech Lab, DAMO Academy) — Apache-2.0
+    https://github.com/modelscope/3D-Speaker
 
 Окно и система / Application shell
 ----------------------------------

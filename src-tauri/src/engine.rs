@@ -15,6 +15,8 @@ use whisper_rs::{
 
 use crate::audio::SAMPLE_RATE;
 use crate::i18n::tr;
+use crate::models::Backend;
+use crate::ru_asr::RuModel;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Segment {
@@ -89,6 +91,8 @@ struct Loaded {
 
 pub struct Engine {
     loaded: Option<Loaded>,
+    /// Русская модель (GigaAM, T-One). Одновременно в памяти только одна модель.
+    ru: Option<(PathBuf, RuModel)>,
     vad_model: Option<PathBuf>,
     cancel: Arc<AtomicBool>,
     last_lang: Option<String>,
@@ -137,20 +141,27 @@ impl EngineError {
 
 impl Engine {
     pub fn new(vad_model: Option<PathBuf>, cancel: Arc<AtomicBool>) -> Self {
-        Self { loaded: None, vad_model, cancel, last_lang: None }
+        Self { loaded: None, ru: None, vad_model, cancel, last_lang: None }
     }
 
-    pub fn is_loaded_with(&self, path: &Path, use_gpu: bool) -> bool {
-        matches!(&self.loaded, Some(l) if l.path == path && l.use_gpu == use_gpu)
+    pub fn is_loaded_with(&self, path: &Path, backend: Backend, use_gpu: bool) -> bool {
+        match backend {
+            Backend::Whisper => matches!(&self.loaded, Some(l) if l.path == path && l.use_gpu == use_gpu),
+            _ => matches!(&self.ru, Some((p, _)) if p == path),
+        }
     }
 
     /// Считает ли загруженная модель на видеокарте.
     pub fn on_gpu(&self) -> Option<bool> {
+        if self.ru.is_some() {
+            return Some(false);
+        }
         self.loaded.as_ref().map(|l| l.on_gpu)
     }
 
     pub fn unload(&mut self) {
         self.loaded = None;
+        self.ru = None;
     }
 
     pub fn detected_language(&self) -> Option<String> {
@@ -158,11 +169,15 @@ impl Engine {
     }
 
     /// Загружает модель. Если видеокарта не поднялась — тихо уходим на процессор.
-    pub fn load(&mut self, path: &Path, use_gpu: bool) -> Result<(), EngineError> {
-        if self.is_loaded_with(path, use_gpu) {
+    pub fn load(&mut self, path: &Path, backend: Backend, use_gpu: bool) -> Result<(), EngineError> {
+        if self.is_loaded_with(path, backend, use_gpu) {
             return Ok(());
         }
-        self.loaded = None;
+        self.unload();
+        if backend != Backend::Whisper {
+            self.ru = Some((path.to_path_buf(), RuModel::load(backend, path)?));
+            return Ok(());
+        }
 
         let path_str = path.to_str().ok_or_else(|| EngineError::Failed("bad model path".into()))?;
         let try_load = |gpu: bool| -> Option<(WhisperContext, WhisperState)> {
@@ -204,6 +219,12 @@ impl Engine {
         on_progress: &mut dyn FnMut(f64),
     ) -> Result<Vec<Segment>, EngineError> {
         self.last_lang = None;
+
+        if let Some((_, ru)) = &self.ru {
+            let segments = ru.transcribe(samples, self.vad_model.as_deref(), &self.cancel, on_progress)?;
+            self.last_lang = Some("ru".into());
+            return Ok(segments);
+        }
 
         let rate = SAMPLE_RATE as usize;
         let chunk_target = 5 * 60 * rate; // куски примерно по 5 минут

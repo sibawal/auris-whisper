@@ -141,6 +141,36 @@ jobs:
             grep -q "роверк" out.txt || { echo "::error::no expected text for $f"; exit 1; }
           done
 
+      # Русские модели (GigaAM v3, T-One) через sherpa-onnx: та же нарезка по паузам
+      # и тот же код распознавания, что в приложении.
+      - name: Cache Russian models
+        uses: actions/cache@v4
+        with:
+          path: test-ru-models
+          key: ru-models-gigaam-v3-t-one-v1
+
+      - name: Russian models test
+        shell: bash
+        run: |
+          set -o pipefail
+          G=https://huggingface.co/csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16/resolve/main
+          T=https://huggingface.co/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main
+          mkdir -p test-ru-models/gigaam test-ru-models/t-one
+          for f in encoder.int8.onnx decoder.onnx joiner.onnx tokens.txt; do
+            [ -f test-ru-models/gigaam/$f ] || curl -sSL --fail -o test-ru-models/gigaam/$f "$G/$f"
+          done
+          for f in model.onnx tokens.txt; do
+            [ -f test-ru-models/t-one/$f ] || curl -sSL --fail -o test-ru-models/t-one/$f "$T/$f"
+          done
+          BIN=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/examples/transcribe
+          for m in gigaam t-one; do
+            echo "::group::$m"
+            "$BIN" test-ru-models/$m tests/audio/ru_speech.m4a 2>&1 | tee out.txt | tee -a ci.log
+            echo "::endgroup::"
+            grep -q "роверк" out.txt || { echo "::error::$m: no expected text"; exit 1; }
+            grep "от реального" out.txt | sed "s/^/::notice title=$m (${{ matrix.slug }})::/" || true
+          done
+
       # Видео: на macOS и Windows проверяем именно системный декодер (AVFoundation,
       # Media Foundation) без подстраховки ffmpeg; на Linux — запасной путь через ffmpeg.
       - name: Video decoding

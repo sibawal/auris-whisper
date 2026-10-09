@@ -16,6 +16,7 @@ pub mod models;
 pub mod monitor;
 mod native_decode;
 pub mod recorder;
+mod ru_asr;
 pub mod settings;
 mod updates;
 
@@ -163,24 +164,27 @@ fn models_state(state: &AppState) -> ModelsState {
 /// Модели разделения по голосам: два файла, общий прогресс под id «diarization».
 #[tauri::command]
 fn download_diarization(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    const ID: &str = "diarization";
-    let Some(cancel) = state.downloads.begin(ID) else { return Ok(()) };
-    let dir = state.models_dir.clone();
+    download_set(app, &state, "diarization", &[models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING], state.models_dir.clone());
+    Ok(())
+}
+
+/// Качает набор файлов в `dir` с общим прогрессом под одним id.
+fn download_set(app: AppHandle, state: &AppState, id: &'static str, files: &'static [models::RemoteFile], dir: PathBuf) {
+    let Some(cancel) = state.downloads.begin(id) else { return };
     let downloads = state.downloads.clone();
     models_changed(&app);
 
     tauri::async_runtime::spawn(async move {
-        let files = [models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING];
         let total: u64 = files.iter().map(|f| f.size).sum();
         let mut done_before = 0u64;
         let mut error = None;
-        for f in &files {
+        for f in files {
             let ok_size = std::fs::metadata(dir.join(f.file)).map(|m| m.len() == f.size).unwrap_or(false);
             if !ok_size {
                 let app2 = app.clone();
                 let base = done_before;
                 let result = models::download(f, &dir, cancel.clone(), move |mut p| {
-                    p.id = ID.into();
+                    p.id = id.into();
                     p.downloaded += base;
                     p.total = total;
                     if p.phase == "done" {
@@ -196,25 +200,20 @@ fn download_diarization(app: AppHandle, state: State<'_, AppState>) -> Result<()
             }
             done_before += f.size;
         }
-        downloads.finish(ID);
-        match error {
-            Some(e) if e != "cancelled" => {
-                let _ = app.emit(
-                    "download-progress",
-                    models::DownloadProgress { id: ID.into(), downloaded: 0, total, bytes_per_sec: 0.0, phase: "error", error: Some(e) },
-                );
-            }
-            Some(_) => {}
-            None => {
-                let _ = app.emit(
-                    "download-progress",
-                    models::DownloadProgress { id: ID.into(), downloaded: total, total, bytes_per_sec: 0.0, phase: "done", error: None },
-                );
-            }
+        downloads.finish(id);
+        let (downloaded, phase, error) = match error {
+            Some(e) if e == "cancelled" => (0, "cancelled", None),
+            Some(e) => (0, "error", Some(e)),
+            None => (total, "done", None),
+        };
+        if phase != "cancelled" {
+            let _ = app.emit(
+                "download-progress",
+                models::DownloadProgress { id: id.into(), downloaded, total, bytes_per_sec: 0.0, phase, error },
+            );
         }
         models_changed(&app);
     });
-    Ok(())
 }
 
 #[tauri::command]
@@ -230,6 +229,10 @@ fn models_changed(app: &AppHandle) {
 #[tauri::command]
 fn download_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let model = models::find(&id).ok_or("unknown model")?;
+    if !model.files.is_empty() {
+        download_set(app, &state, model.id, model.files, state.models_dir.join(model.file));
+        return Ok(());
+    }
     let Some(cancel) = state.downloads.begin(&id) else { return Ok(()) };
     let dir = state.models_dir.clone();
     let downloads = state.downloads.clone();
@@ -282,10 +285,19 @@ fn delete_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Resul
     }
     if let Some(path) = models::model_path(&state.models_dir, &id) {
         state.engine.lock().unwrap().unload();
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
     }
     if let Some(m) = models::find(&id) {
-        let _ = std::fs::remove_file(state.models_dir.join(format!("{}.part", m.file)));
+        if m.files.is_empty() {
+            let _ = std::fs::remove_file(state.models_dir.join(format!("{}.part", m.file)));
+        } else {
+            // Недокачанная модель из нескольких файлов: убираем её папку целиком.
+            let _ = std::fs::remove_dir_all(state.models_dir.join(m.file));
+        }
     }
     models_changed(&app);
     Ok(())
@@ -499,9 +511,10 @@ fn run_one(
 
     // 3. Модель (грузится один раз и остаётся в памяти)
     let mut engine = engine.lock().unwrap();
-    if !engine.is_loaded_with(model_path, settings.use_gpu) {
+    let backend = settings.model.as_deref().map(models::backend_of).unwrap_or(models::Backend::Whisper);
+    if !engine.is_loaded_with(model_path, backend, settings.use_gpu) {
         emit_job(app, JobEvent::Phase { phase: "loading", name: name.clone(), audio_seconds, recording: is_rec });
-        if let Err(e) = engine.load(model_path, settings.use_gpu) {
+        if let Err(e) = engine.load(model_path, backend, settings.use_gpu) {
             return fail(e.message(), false);
         }
     }
@@ -514,10 +527,15 @@ fn run_one(
         Err(EngineError::Cancelled) => return,
         Err(e) => return fail(e.message(), false),
     };
-    let segments = match &turns {
+    let mut segments = match &turns {
         Some(t) => diarize::split_by_speaker(segments, t),
         None => segments,
     };
+    if backend == models::Backend::Tone && turns.is_some() {
+        for s in &mut segments {
+            s.text = ru_asr::tidy_phrase(&s.text);
+        }
+    }
     let speakers = turns.as_ref().map(|t| t.iter().map(|x| x.speaker + 1).max().unwrap_or(0)).unwrap_or(0);
     let elapsed = started.elapsed().as_secs_f64();
     let language = engine.detected_language();

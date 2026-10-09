@@ -304,6 +304,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
 .model-error { grid-column: 1 / -1; color: var(--danger); font-size: 12px; user-select: text; -webkit-user-select: text; }
 
 .section-label { margin: 8px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+.section-intro { margin: -2px 2px 2px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 
 .sheet-foot {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -324,6 +325,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .28); }
   background: var(--accent-soft); color: var(--text);
 }
 .update .ico { color: var(--accent); }
+#ruTip > span { font-size: 12.5px; }
 .update-progress { flex: 0 0 160px; height: 5px; }
 
 .notes { padding: 0 20px 18px; overflow: auto; white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; user-select: text; -webkit-user-select: text; }

@@ -69,6 +69,10 @@ function bytes(n) {
 
 function baseName(path) { return path.split(/[\\/]/).pop(); }
 
+// Модель понимает только русский (GigaAM, T-One).
+function isRuModel(id) { return S.catalog.find((m) => m.id === id)?.lang === "ru"; }
+function ruLocked() { return hasModel() && isRuModel(S.settings.model); }
+
 function modelName(id) {
   const m = MODEL_TEXT[id];
   return m?.[`name_${lang()}`] ?? m?.name ?? id;
@@ -95,6 +99,7 @@ function applyStrings() {
     sel.appendChild(o);
   }
   sel.value = current;
+  renderLanguageLock();
 
   document.querySelectorAll("#uiLang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === lang()));
   renderStatus();
@@ -105,6 +110,20 @@ function applyStrings() {
   renderSpeakerCount();
   renderDiarize();
   renderUpdate();
+  renderRuTip();
+}
+
+// С русской моделью язык один — показываем его и не даём менять.
+function renderLanguageLock() {
+  const sel = $("language"), locked = ruLocked();
+  sel.value = locked ? "ru" : S.settings.language;
+  sel.disabled = S.busy || locked;
+  sel.title = locked ? t("ruLangLocked") : "";
+}
+
+// Выбран русский язык, а считает Whisper — подсказываем, что есть модели лучше.
+function renderRuTip() {
+  $("ruTip").hidden = !(S.settings.language === "ru" && hasModel() && !isRuModel(S.settings.model) && !S.settings.ruTipHidden);
 }
 
 function renderStatus() {
@@ -125,7 +144,7 @@ function renderModelChip() {
 function renderEngineInfo() {
   const sys = S.system;
   if (!sys) return;
-  const gpu = S.settings.useGpu && sys.gpuBackend !== "CPU" && S.lastOnGpu !== false ? sys.gpuBackend : "CPU";
+  const gpu = S.settings.useGpu && sys.gpuBackend !== "CPU" && S.lastOnGpu !== false && !ruLocked() ? sys.gpuBackend : "CPU";
   $("engineInfo").textContent = gpu === "CPU" ? (sys.compat ? t("cpuCompat") : "CPU") : `⚡ ${gpu}`;
   $("engineInfo").title = (gpu === "CPU" ? t("gpuNone") : sys.gpuDevices.join(", ")) + " — " + t("modelsTitle");
 }
@@ -135,7 +154,7 @@ function renderBusy() {
   $("progressRow").hidden = !busy;
   $("openBtn").disabled = busy;
   $("dictateBtn").disabled = busy;
-  $("language").disabled = busy;
+  renderLanguageLock();
   $("dropIdle").hidden = rec;
   $("dropRec").hidden = !rec;
   $("drop").classList.toggle("recording", rec);
@@ -467,7 +486,7 @@ function openModels() {
   const dlg = $("modelsDialog");
   if (!dlg.open) dlg.showModal();
   // Модель могли положить в папку руками — перечитываем список.
-  invoke("list_models").then(onModelsChanged).catch(() => {});
+  return invoke("list_models").then(onModelsChanged).catch(() => {});
 }
 
 function isFirstRun() { return S.installed.length === 0; }
@@ -498,14 +517,25 @@ function renderModels() {
   list.innerHTML = "";
   const installedIds = new Set(S.installed.map((m) => m.id));
 
-  for (const m of S.catalog) {
-    list.appendChild(modelCard({
-      id: m.id, size: m.size, quality: m.quality, speed: m.speed, ramGb: m.ramGb,
-      desc: MODEL_TEXT[m.id]?.[lang()] ?? "",
-      installed: installedIds.has(m.id), custom: false,
-      recommended: m.id === sys.recommended,
-    }));
-  }
+  const card = (m) => modelCard({
+    id: m.id, size: m.size, quality: m.quality, speed: m.speed, ramGb: m.ramGb,
+    desc: MODEL_TEXT[m.id]?.[lang()] ?? "",
+    installed: installedIds.has(m.id), custom: false,
+    recommended: m.id === sys.recommended,
+    ruBest: m.id === "gigaam-v3",
+  });
+  for (const m of S.catalog.filter((m) => !m.lang)) list.appendChild(card(m));
+
+  const ru = document.createElement("div");
+  ru.className = "section-label";
+  ru.id = "ruSection";
+  ru.textContent = t("ruOnly");
+  list.appendChild(ru);
+  const ruIntro = document.createElement("div");
+  ruIntro.className = "section-intro";
+  ruIntro.textContent = t("ruOnlyIntro");
+  list.appendChild(ruIntro);
+  for (const m of S.catalog.filter((m) => m.lang === "ru")) list.appendChild(card(m));
 
   const extras = document.createElement("div");
   extras.className = "section-label";
@@ -535,6 +565,7 @@ function modelCard(m) {
 
   const badges = [];
   if (m.recommended) badges.push(`<span class="badge">★ ${esc(t("recommended"))}</span>`);
+  if (m.ruBest) badges.push(`<span class="badge">★ ${esc(t("ruBadge"))}</span>`);
   if (active) badges.push(`<span class="badge ok">✓ ${esc(t("active"))}</span>`);
 
   let html = `
@@ -614,6 +645,8 @@ async function selectModel(id) {
   await saveSettings();
   renderModelChip();
   renderEngineInfo();
+  renderLanguageLock();
+  renderRuTip();
   renderModels();
 }
 
@@ -632,6 +665,8 @@ function onModelsChanged(state) {
   }
   renderModelChip();
   renderEngineInfo();
+  renderLanguageLock();
+  renderRuTip();
   if ($("modelsDialog").open) renderModels();
 }
 
@@ -779,7 +814,12 @@ function openAbout() {
 // ---------- Подключение ----------
 
 function wire() {
-  $("language").addEventListener("change", (e) => { S.settings.language = e.target.value; saveSettings(); });
+  $("language").addEventListener("change", (e) => { S.settings.language = e.target.value; saveSettings(); renderRuTip(); });
+  $("ruTipBtn").addEventListener("click", async () => {
+    await openModels(); // список перерисуется — прокручиваем уже после этого
+    $("ruSection")?.scrollIntoView({ block: "start" });
+  });
+  $("ruTipClose").addEventListener("click", () => { S.settings.ruTipHidden = true; saveSettings(); renderRuTip(); });
   $("timestamps").addEventListener("change", (e) => { S.settings.timestamps = e.target.checked; saveSettings(); });
   $("autoSave").addEventListener("change", (e) => { S.settings.autoSave = e.target.checked; saveSettings(); });
   document.querySelectorAll("#uiLang button").forEach((b) => b.addEventListener("click", () => {

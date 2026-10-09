@@ -1,17 +1,23 @@
-## Что нового в 2.1.0
+## Что нового в 2.2.0
 
-**Разделение по голосам.** Включите «Разделять по голосам» под кнопками — приложение определит, кто что сказал, и подпишет реплики: «Спикер 1», «Спикер 2»… Нажмите на спикера над текстом и дайте ему имя — оно сразу заменится во всём тексте, в том числе в уже сохранённых .txt. Если знаете, сколько людей в записи, укажите — так точнее. Модели голосов (~34 МБ) скачиваются один раз при первом включении и работают без интернета.
+**Модели для русской речи.** В окне моделей появился раздел «Только для русской речи»:
 
-**Обновления по воздуху.** При запуске приложение проверяет, не вышла ли новая версия, и предлагает «Скачать и установить» — на macOS, Windows и в AppImage для Linux. Обновления подписаны: чужой пакет приложение не поставит. Проверку можно выключить в «О программе».
+- **GigaAM v3** от Сбера (221 МБ) — самая точная для русского. Сама ставит знаки препинания и заглавные буквы, пишет числа цифрами.
+- **T-One** от Т-Банка (138 МБ) — обучена на телефонных разговорах, хороша для звонков и шумных записей. Пишет без знаков препинания.
 
-**Старые процессоры.** На компьютерах с процессором без AVX2 (Core 2-го и 3-го поколения, Pentium, Celeron) Windows- и Linux-версии закрывались при начале расшифровки. Теперь в установщике есть совместимая копия движка, и приложение само переключается на неё.
+Обе работают на процессоре и в несколько раз быстрее Whisper: на Apple M4 GigaAM v3 расшифровывает 17 минут речи меньше чем за минуту. На компьютерах без видеокарты разница ещё заметнее. Разделение по голосам, таймкоды и диктовка работают с ними так же, как с Whisper.
+
+Другие языки эти модели не понимают, поэтому, пока выбрана одна из них, язык распознавания зафиксирован на русском. Если выбрать русский язык при модели Whisper, приложение предложит попробовать GigaAM.
 
 ---
 
-## What's new in 2.1.0
+## What's new in 2.2.0
 
-**Speaker separation.** Turn on *Split by speaker* under the buttons and the app works out who said what, labelling lines “Speaker 1”, “Speaker 2”… Click a speaker above the text and give them a name — it replaces the label throughout the text, including .txt files already saved. If you know how many people speak, set it for better accuracy. The voice models (~34 MB) download once and work offline.
+**Models for Russian speech.** The model window has a new *Russian speech only* section:
 
-**Over-the-air updates.** At launch the app checks for a new version and offers *Download and install* on macOS, Windows and the Linux AppImage. Updates are signed, so a tampered package is refused. The check can be turned off in *About*.
+- **GigaAM v3** by Sber (221 MB) — the most accurate for Russian. Adds punctuation and capitals, writes numbers as digits.
+- **T-One** by T-Bank (138 MB) — trained on phone calls, good for calls and noisy recordings. Writes without punctuation.
 
-**Older CPUs.** On processors without AVX2 (2nd/3rd-gen Core, Pentium, Celeron) the Windows and Linux builds closed as soon as transcription started. The installer now carries a compatible copy of the engine and the app switches to it automatically.
+Both run on the CPU and are several times faster than Whisper: on an Apple M4, GigaAM v3 transcribes 17 minutes of speech in under a minute. On computers without a GPU the gap is even larger. Speaker separation, timestamps and dictation work with them just as with Whisper.
+
+They do not understand other languages, so while one of them is selected the recognition language is locked to Russian. Pick Russian with a Whisper model and the app suggests trying GigaAM.

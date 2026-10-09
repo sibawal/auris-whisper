@@ -1,6 +1,6 @@
 [package]
 name = "auris-whisper"
-version = "2.1.0"
+version = "2.2.0"
 description = "Offline speech-to-text: drop a file or dictate, get clean text"
 authors = ["boopi.ru"]
 license = "MIT"

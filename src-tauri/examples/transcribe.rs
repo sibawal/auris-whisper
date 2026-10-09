@@ -1,6 +1,6 @@
 //! Консольная проверка: тот же декодер и движок, что и в приложении.
 //!
-//!   cargo run --release --example transcribe -- <модель.bin> <аудиофайл> [язык] [--cpu] [--diarize <папка> [число спикеров]]
+//!   cargo run --release --example transcribe -- <модель.bin | папка модели> <аудиофайл> [язык] [--cpu] [--diarize <папка> [число спикеров]]
 //!
 //! `--diarize` — разделить по голосам; в папке лежат модели сегментации и отпечатков
 //! (имена как в каталоге приложения).
@@ -41,7 +41,16 @@ fn main() {
     let vad = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/ggml-silero-v5.1.2.bin");
     let mut eng = engine::Engine::new(Some(vad), Arc::new(AtomicBool::new(false)));
     let t1 = Instant::now();
-    if let Err(e) = eng.load(Path::new(&args[1]), use_gpu) {
+    // Папка с encoder.int8.onnx — GigaAM, с model.onnx — T-One, файл — whisper.
+    let model = Path::new(&args[1]);
+    let backend = if model.join("encoder.int8.onnx").is_file() {
+        auris_whisper_lib::models::Backend::Gigaam
+    } else if model.join("model.onnx").is_file() {
+        auris_whisper_lib::models::Backend::Tone
+    } else {
+        auris_whisper_lib::models::Backend::Whisper
+    };
+    if let Err(e) = eng.load(model, backend, use_gpu) {
         println!("ОШИБКА загрузки модели: {}", e.message());
         std::process::exit(1);
     }

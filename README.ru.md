@@ -36,6 +36,10 @@
 - **Выбор модели — от крошечной до самой точной.** Модели не вшиты в установщик:
   после установки выбираете подходящую, и она один раз скачивается. Можно держать
   несколько и переключаться, удалять лишние, добавить свой файл модели.
+- **Отдельные модели для русской речи** — GigaAM v3 от Сбера и T-One от Т-Банка.
+  Если в записях говорят только по-русски, они точнее Whisper и в несколько раз
+  быстрее даже на процессоре. GigaAM сама ставит знаки препинания и пишет числа
+  цифрами.
 - **Ускорение на видеокарте**: Metal на Apple Silicon, Vulkan на Windows и Linux
   (NVIDIA, AMD, Intel). Нет видеокарты — считает процессор, само.
 - **Кто что сказал.** «Разделять по голосам» подписывает реплики: «Спикер 1»,
@@ -116,7 +120,21 @@ Windows обычные программы не спрашивает: если и
 Ориентир: на Apple M4 модель Large v3 Turbo · compact расшифровывает 7,5 минут
 речи за 32 секунды (×14 от реального времени).
 
-Модели скачиваются с [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp),
+### Только для русской речи
+
+| Модель | Размер | Для чего |
+|---|---|---|
+| **GigaAM v3** ★ | 221 МБ | самая точная для русского: знаки препинания, заглавные, числа цифрами |
+| T-One | 138 МБ | звонки и шумные записи; пишет без знаков препинания |
+
+Обе считаются на процессоре и не зависят от видеокарты: на Apple M4 GigaAM v3
+расшифровывает 17 минут речи за 54 секунды (×19), то есть быстрее, чем Whisper
+на видеокарте. Другие языки эти модели не понимают — пока выбрана одна из них,
+язык распознавания зафиксирован на русском. Если выбрать русский язык при модели
+Whisper, приложение предложит их попробовать.
+
+Модели Whisper скачиваются с [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp),
+русские — из [проекта sherpa-onnx](https://huggingface.co/csukuangfj);
 загрузка продолжается с места обрыва, файл сверяется по SHA-256. Лежат они здесь:
 
 | Система | Папка моделей |
@@ -192,6 +210,9 @@ cargo run --release --example transcribe -- путь/к/модели.bin зап�
 |---|---|
 | `src-tauri/src/audio.rs` | любой контейнер → 16 кГц моно: Symphonia + libopus, потоковый ресемплер |
 | `src-tauri/src/engine.rs` | whisper.cpp через whisper-rs: нарезка, детектор речи, защита от зацикливания |
+| `src-tauri/src/ru_asr.rs` | GigaAM v3 и T-One через sherpa-onnx: нарезка по паузам, время слов |
+| `src-tauri/src/diarize.rs` | разделение по голосам (pyannote + 3D-Speaker через sherpa-onnx) |
+| `src-tauri/src/updates.rs` | обновления по воздуху |
 | `src-tauri/src/models.rs` | каталог моделей, загрузка с докачкой, проверка SHA-256 |
 | `src-tauri/src/recorder.rs` | запись с микрофона (CoreAudio / WASAPI / ALSA) |
 | `src-tauri/src/monitor.rs` | процессор и память; видеокарта через IOKit / PDH / sysfs |
@@ -206,7 +227,10 @@ git (тег `v1.0.1`).
 MIT — см. [LICENSE](LICENSE), [перевод на русский](LICENSE.ru.md). Пользуйтесь, меняйте, распространяйте.
 
 Внутри: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) и ggml (MIT),
-модели [Whisper](https://github.com/openai/whisper) от OpenAI (MIT), Silero VAD (MIT),
+модели [Whisper](https://github.com/openai/whisper) от OpenAI (MIT),
+[GigaAM](https://github.com/salute-developers/GigaAM) от Сбера (MIT),
+[T-One](https://github.com/voicekit-team/T-one) от Т-Банка (Apache-2.0),
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0), Silero VAD (MIT),
 Tauri (MIT/Apache-2.0), Symphonia (MPL-2.0), libopus (BSD). Полный список — в
 [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
 
