@@ -55,7 +55,7 @@ fn main() {
     whisper_rs::install_logging_hooks();
     let vad = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/ggml-silero-v5.1.2.bin");
     let mut eng = engine::Engine::new(Some(vad), Arc::new(AtomicBool::new(false)));
-    if let Err(e) = eng.load(Path::new(model), true) {
+    if let Err(e) = eng.load(Path::new(model), auris_whisper_lib::models::Backend::Whisper, true) {
         println!("ОШИБКА загрузки модели: {}", e.message());
         std::process::exit(1);
     }
