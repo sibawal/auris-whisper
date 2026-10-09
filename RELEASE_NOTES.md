@@ -9,6 +9,8 @@
 
 Другие языки эти модели не понимают, поэтому, пока выбрана одна из них, язык распознавания зафиксирован на русском. Если выбрать русский язык при модели Whisper, приложение предложит попробовать GigaAM.
 
+**Linux.** В версии 2.1.0 разделение по голосам на Linux закрывало приложение — исправлено.
+
 ---
 
 ## What's new in 2.2.0
@@ -21,3 +23,5 @@
 Both run on the CPU and are several times faster than Whisper: on an Apple M4, GigaAM v3 transcribes 17 minutes of speech in under a minute. On computers without a GPU the gap is even larger. Speaker separation, timestamps and dictation work with them just as with Whisper.
 
 They do not understand other languages, so while one of them is selected the recognition language is locked to Russian. Pick Russian with a Whisper model and the app suggests trying GigaAM.
+
+**Linux.** In 2.1.0, speaker separation closed the app on Linux — fixed.
