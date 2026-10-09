@@ -1,6 +1,6 @@
 [package]
 name = "auris-whisper"
-version = "2.2.0"
+version = "2.2.1"
 description = "Offline speech-to-text: drop a file or dictate, get clean text"
 authors = ["boopi.ru"]
 license = "MIT"
@@ -47,6 +47,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "time"] }
 sha2 = "0.10"
+
+# Разделение по голосам: спектральная кластеризация голосовых отпечатков
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 
 # Полоса нагрузки
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }

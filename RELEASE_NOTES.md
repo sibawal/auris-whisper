@@ -1,27 +1,23 @@
-## Что нового в 2.2.0
+## Что нового в 2.2.1
 
-**Модели для русской речи.** В окне моделей появился раздел «Только для русской речи»:
+**Разделение по голосам переделано.**
 
-- **GigaAM v3** от Сбера (221 МБ) — самая точная для русского. Сама ставит знаки препинания и заглавные буквы, пишет числа цифрами.
-- **T-One** от Т-Банка (138 МБ) — обучена на телефонных разговорах, хороша для звонков и шумных записей. Пишет без знаков препинания.
+- Число спикеров определяется верно. Раньше на живом разговоре двух человек приложение могло найти 5–10 «спикеров», а если число задать вручную — отдать весь текст одному.
+- В 5–10 раз быстрее: 3,5 минуты разговора делятся по голосам меньше чем за 3 секунды на Apple M4.
+- Короткие реплики на стыке («да», «угу») точнее попадают к своему спикеру: граница ставится в паузу между репликами.
+- Нужна одна модель (28 МБ) вместо двух. Если разделение по голосам уже включали — ничего докачивать не придётся.
 
-Обе работают на процессоре и в несколько раз быстрее Whisper: на Apple M4 GigaAM v3 расшифровывает 17 минут речи меньше чем за минуту. На компьютерах без видеокарты разница ещё заметнее. Разделение по голосам, таймкоды и диктовка работают с ними так же, как с Whisper.
-
-Другие языки эти модели не понимают, поэтому, пока выбрана одна из них, язык распознавания зафиксирован на русском. Если выбрать русский язык при модели Whisper, приложение предложит попробовать GigaAM.
-
-**Linux.** В версии 2.1.0 разделение по голосам на Linux закрывало приложение — исправлено.
+**Нумерация спикеров.** Каждая новая расшифровка начинает с «Спикер 1». Раньше номера продолжались от предыдущего файла в окне (3, 4…), и казалось, что спикеров больше, чем на самом деле.
 
 ---
 
-## What's new in 2.2.0
+## What's new in 2.2.1
 
-**Models for Russian speech.** The model window has a new *Russian speech only* section:
+**Speaker separation rebuilt.**
 
-- **GigaAM v3** by Sber (221 MB) — the most accurate for Russian. Adds punctuation and capitals, writes numbers as digits.
-- **T-One** by T-Bank (138 MB) — trained on phone calls, good for calls and noisy recordings. Writes without punctuation.
+- The number of speakers is now detected correctly. Before, a live two-person conversation could come out as 5–10 "speakers", and setting the number by hand could hand all the text to one person.
+- 5–10× faster: 3.5 minutes of conversation are split in under 3 seconds on an Apple M4.
+- Short replies at a turn change ("yes", "uh-huh") land with the right speaker: the boundary is placed in the pause between replies.
+- One model (28 MB) instead of two. If you have used speaker separation before, nothing new is downloaded.
 
-Both run on the CPU and are several times faster than Whisper: on an Apple M4, GigaAM v3 transcribes 17 minutes of speech in under a minute. On computers without a GPU the gap is even larger. Speaker separation, timestamps and dictation work with them just as with Whisper.
-
-They do not understand other languages, so while one of them is selected the recognition language is locked to Russian. Pick Russian with a Whisper model and the app suggests trying GigaAM.
-
-**Linux.** In 2.1.0, speaker separation closed the app on Linux — fixed.
+**Speaker numbering.** Every new transcription starts again from "Speaker 1". Before, numbers continued from the previous file in the window (3, 4…), which looked like extra speakers.

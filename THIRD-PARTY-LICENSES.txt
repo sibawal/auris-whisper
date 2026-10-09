@@ -24,8 +24,6 @@ GigaAM v3 — © GigaChat Team (Sber) — MIT
     https://github.com/salute-developers/GigaAM
 T-One — © T-Software DC (T-Bank) — Apache-2.0
     https://github.com/voicekit-team/T-one
-pyannote segmentation 3.0 (разделение по голосам / speaker separation) — © CNRS, Hervé Bredin — MIT
-    https://huggingface.co/pyannote/segmentation-3.0
 3D-Speaker CAM++ (голосовые отпечатки / speaker embeddings) — © Alibaba (Speech Lab, DAMO Academy) — Apache-2.0
     https://github.com/modelscope/3D-Speaker
 

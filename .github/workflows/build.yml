@@ -168,7 +168,6 @@ jobs:
             [ -f test-ru-models/t-one/$f ] || curl -sSL --fail -o test-ru-models/t-one/$f "$T/$f"
           done
           D=test-ru-models/diarize
-          [ -f $D/pyannote-segmentation-3.0.onnx ] || curl -sSL --fail -o $D/pyannote-segmentation-3.0.onnx https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx
           [ -f $D/3dspeaker-campplus-zh-en-advanced.onnx ] || curl -sSL --fail -o $D/3dspeaker-campplus-zh-en-advanced.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
           [ "$RUNNER_OS" = "Linux" ] && { sudo apt-get install -y gdb > /dev/null 2>&1 || true; }
           BIN=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/examples/transcribe
@@ -189,6 +188,15 @@ jobs:
             fi
             echo "::endgroup::"
           }
+          # Качество разделения по голосам: диалог двух дикторов с разметкой.
+          echo "::group::diarize-quality"
+          (cd src-tauri && cargo build --release --example diarize --target ${{ matrix.target }} 2>&1 | tail -3)
+          DB=${CARGO_TARGET_DIR:-src-tauri/target}/${{ matrix.target }}/release/examples/diarize
+          PY=python3; [ "$RUNNER_OS" = "Windows" ] && PY=python
+          if "$DB" $D tests/audio/dialog_2speakers.ogg > diar.json 2>> ci.log \
+             && PYTHONIOENCODING=utf-8 $PY scripts/diarize-score.py tests/audio/dialog_2speakers.truth.json diar.json --max-err 5 --speakers 2 | tee -a ci.log | sed "s/^/::notice title=diarize (${{ matrix.slug }})::/"; then :
+          else failed="$failed diarize-quality"; echo "::error::diarize quality"; cat diar.json | tee -a ci.log; fi
+          echo "::endgroup::"
           run diarize-whisper test-model/ggml-tiny.bin $A ru --diarize $D 2
           run t-one test-ru-models/t-one $A
           run gigaam test-ru-models/gigaam $A

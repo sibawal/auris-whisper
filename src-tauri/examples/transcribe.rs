@@ -66,7 +66,7 @@ fn main() {
         let t = Instant::now();
         let turns = auris_whisper_lib::diarize::diarize(
             &samples,
-            &dir.join(auris_whisper_lib::models::DIARIZE_SEGMENTATION.file),
+            eng.vad_model(),
             &dir.join(auris_whisper_lib::models::DIARIZE_EMBEDDING.file),
             speakers,
             &AtomicBool::new(false),

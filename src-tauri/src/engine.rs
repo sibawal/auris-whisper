@@ -164,6 +164,11 @@ impl Engine {
         self.ru = None;
     }
 
+    /// Детектор речи Silero, если он есть в установке.
+    pub fn vad_model(&self) -> Option<&Path> {
+        self.vad_model.as_deref()
+    }
+
     pub fn detected_language(&self) -> Option<String> {
         self.last_lang.clone()
     }

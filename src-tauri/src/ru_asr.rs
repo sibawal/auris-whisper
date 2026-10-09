@@ -12,17 +12,15 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sherpa_onnx_sys as so;
-use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
 use crate::audio::SAMPLE_RATE;
 use crate::engine::{EngineError, Segment};
 use crate::i18n::tr;
 use crate::models::Backend;
+use crate::vad::{speech_spans, threads, VadOptions};
 
 /// Доля прогресса, которая приходится на поиск речи.
 const VAD_SHARE: f64 = 0.1;
-/// Детектор речи прогоняем кусками по столько секунд — ради прогресса и отмены.
-const VAD_CHUNK_SECS: usize = 120;
 
 /// Самый длинный кусок, который отдаём модели.
 const MAX_PIECE_SECS: f32 = 20.0;
@@ -60,10 +58,6 @@ fn cstr(p: &Path) -> Result<CString, EngineError> {
     p.to_str().and_then(|s| CString::new(s).ok()).ok_or_else(|| EngineError::Failed("bad model path".into()))
 }
 
-fn threads() -> i32 {
-    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    n.saturating_sub(1).clamp(1, 8) as i32
-}
 
 fn load_failed() -> EngineError {
     EngineError::Failed(tr(
@@ -337,43 +331,14 @@ fn speech_pieces(
         .collect())
 }
 
-/// Отрезки речи в секундах по детектору Silero. `None` — детектор не поднялся
-/// или расшифровку отменили.
 fn vad_spans(
     samples: &[f32],
     model: &Path,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(f64),
 ) -> Option<Vec<(f64, f64)>> {
-    let mut cp = WhisperVadContextParams::new();
-    cp.set_n_threads(threads());
-    cp.set_use_gpu(false);
-    let mut ctx = WhisperVadContext::new(model.to_str()?, cp).ok()?;
-    let mut vp = WhisperVadParams::new();
-    vp.set_threshold(0.5);
-    vp.set_min_speech_duration(250);
-    vp.set_min_silence_duration(300);
-    vp.set_max_speech_duration(MAX_PIECE_SECS);
-    vp.set_speech_pad(100);
-    vp.set_samples_overlap(0.0);
-
-    let rate = SAMPLE_RATE as usize;
-    let chunk = VAD_CHUNK_SECS * rate;
-    let mut out = Vec::new();
-    for start in (0..samples.len()).step_by(chunk) {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let end = (start + chunk).min(samples.len());
-        let offset = start as f64 / rate as f64;
-        // Хвост короче секунды детектору не отдаём — в нём нечего искать.
-        if end - start >= rate {
-            let segs = ctx.segments_from_samples(vp, &samples[start..end]).ok()?;
-            out.extend(segs.map(|s| (offset + s.start as f64 / 100.0, offset + s.end as f64 / 100.0)));
-        }
-        on_progress(end as f64 / samples.len() as f64);
-    }
-    Some(out)
+    let opts = VadOptions { min_silence_ms: 300, max_speech_s: MAX_PIECE_SECS, pad_ms: 100 };
+    speech_spans(samples, model, &opts, cancel, on_progress)
 }
 
 /// Склеивает соседние отрезки с короткой паузой, пока кусок не длиннее `max`.

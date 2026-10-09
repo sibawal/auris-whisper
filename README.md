@@ -44,8 +44,10 @@ No accounts, no uploads. Everything runs on your own computer.
   (NVIDIA, AMD, Intel). No GPU — it runs on the CPU, automatically.
 - **Who said what.** *Split by speaker* labels every line — “Speaker 1”,
   “Speaker 2”… Click a speaker and give them a name: it replaces the label
-  throughout the text, including .txt files already saved. Runs on the CPU with
-  two small models (~34 MB, pyannote + 3D-Speaker) downloaded on first use.
+  throughout the text, including .txt files already saved. The number of people is
+  detected automatically (or set it yourself). Runs on the CPU — on an Apple M4
+  about 100× faster than real time — with a small voiceprint model (~28 MB,
+  3D-Speaker CAM++) downloaded on first use.
 - **Updates itself.** At launch the app checks GitHub for a new version and
   installs it with one click (macOS, Windows, Linux AppImage). Packages are
   signed; the check can be turned off in *About*.
@@ -211,7 +213,7 @@ engine is [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 | `src-tauri/src/audio.rs` | any container → 16 kHz mono: Symphonia + libopus, streaming resampler |
 | `src-tauri/src/engine.rs` | whisper.cpp via whisper-rs: chunking, voice detection, loop protection |
 | `src-tauri/src/ru_asr.rs` | GigaAM v3 and T-One via sherpa-onnx: splitting at pauses, word timing |
-| `src-tauri/src/diarize.rs` | speaker separation (pyannote + 3D-Speaker via sherpa-onnx) |
+| `src-tauri/src/diarize.rs`, `cluster.rs` | speaker separation: voice detection, 3D-Speaker CAM++ voiceprints via sherpa-onnx, spectral clustering |
 | `src-tauri/src/updates.rs` | over-the-air updates |
 | `src-tauri/src/models.rs` | model catalog, resumable downloads, SHA-256 check |
 | `src-tauri/src/recorder.rs` | microphone capture (CoreAudio / WASAPI / ALSA) |

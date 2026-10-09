@@ -31,9 +31,11 @@ const S = {
   stats: null,
   lastOnGpu: null,
   diarizeReady: false,
-  speakers: [],    // {label, name} — номера сквозные на весь текст в окне
-  results: [],     // {name, header, segments, timestamps, savePath} — для переименования
+  speakers: [],    // {label, name} — спикеры последней расшифровки (в пачке файлов — сквозные)
+  results: [],     // {name, header, segments, timestamps, savePath} — последней расшифровки
+  jobPrefix: "",   // текст, который был в окне до последней расшифровки
   update: null,    // найденное обновление
+  listening: [],   // подписки на события: окно готово, когда все оформлены
 };
 
 const SPEAKER_COLORS = ["#5b5ce6", "#e5484d", "#30a46c", "#f76b15", "#0090ff", "#ab4aba", "#d6409f", "#978365"];
@@ -271,7 +273,11 @@ async function renameSpeaker(i, raw) {
   sp.name = wanted;
   const area = $("transcript");
   const re = new RegExp(`(^|\\n)((?:\\[[^\\]\\n]*\\]\\s+)?)${escapeRe(before)}:`, "g");
-  area.value = area.value.replace(re, (_, nl, ts) => `${nl}${ts}${after}:`);
+  const relabel = (text) => text.replace(re, (_, nl, ts) => `${nl}${ts}${after}:`);
+  // Только текст последней расшифровки: у прежних свои «Спикер 1» и «Спикер 2».
+  // Если прежний текст успели поправить руками, границу не найти — меняем везде.
+  const v = area.value, prefix = S.jobPrefix;
+  area.value = prefix && v.startsWith(prefix) ? prefix + relabel(v.slice(prefix.length)) : relabel(v);
   renderSpeakers();
   for (const r of S.results) {
     if (r.savePath && r.segments.some((x) => x.speaker === i)) {
@@ -378,6 +384,14 @@ async function chooseFiles() {
 function onJob(ev) {
   switch (ev.kind) {
     case "file":
+      // Новая расшифровка — спикеры снова с «Спикер 1». Прежний текст остаётся
+      // в окне как есть, переименование его уже не трогает.
+      if (ev.index === 0) {
+        S.speakers = [];
+        S.results = [];
+        S.jobPrefix = $("transcript").value;
+        renderSpeakers();
+      }
       S.queue = ev.total > 1 ? t("fileOf", ev.index + 1, ev.total) : "";
       setProgress(0, true);
       renderStatus();
@@ -542,7 +556,7 @@ function renderModels() {
   extras.textContent = t("extras");
   list.appendChild(extras);
   list.appendChild(modelCard({
-    id: "diarization", size: 34274077, desc: MODEL_TEXT.diarization[lang()],
+    id: "diarization", size: 28281164, desc: MODEL_TEXT.diarization[lang()],
     installed: S.diarizeReady, custom: true, extra: true,
   }));
 
@@ -855,6 +869,7 @@ function wire() {
     S.lastSaved = null;
     S.speakers = [];
     S.results = [];
+    S.jobPrefix = "";
     renderSpeakers();
     hideError();
     setStatus(() => t("ready"));
@@ -901,7 +916,7 @@ function wire() {
     }
   });
 
-  listen("job", (e) => onJob(e.payload));
+  S.listening.push(listen("job", (e) => onJob(e.payload)));
   $("diarize").addEventListener("change", (e) => {
     S.settings.diarize = e.target.checked;
     saveSettings();
@@ -918,7 +933,7 @@ function wire() {
   $("notesClose").addEventListener("click", () => $("notesDialog").close());
   $("checkUpdates").addEventListener("change", (e) => { S.settings.checkUpdates = e.target.checked; saveSettings(); });
   $("checkNowBtn").addEventListener("click", () => { $("updateCheckResult").textContent = "…"; checkUpdate(true); });
-  listen("update-progress", (e) => onUpdateProgress(e.payload));
+  S.listening.push(listen("update-progress", (e) => onUpdateProgress(e.payload)));
 
   $("micSelect").addEventListener("change", (e) => { S.settings.mic = e.target.value || null; saveSettings(); });
   $("micSelect").addEventListener("focus", refreshMics);
@@ -926,15 +941,15 @@ function wire() {
   $("recWarnBtn").addEventListener("click", openMicSettings);
   if (IS_LINUX) $("recWarnBtn").hidden = true;
 
-  listen("rec-level", (e) => {
+  S.listening.push(listen("rec-level", (e) => {
     $("recWarn").hidden = !e.payload.silent;
     $("recTime").textContent = timecode(e.payload.seconds);
     $("recLevel").style.width = `${Math.max(2, e.payload.level * 100)}%`;
-  });
-  listen("download-progress", (e) => onDownloadProgress(e.payload));
-  listen("models-changed", (e) => onModelsChanged(e.payload));
-  listen("stats", (e) => onStats(e.payload));
-  listen("open-files", (e) => transcribe(e.payload));
+  }));
+  S.listening.push(listen("download-progress", (e) => onDownloadProgress(e.payload)));
+  S.listening.push(listen("models-changed", (e) => onModelsChanged(e.payload)));
+  S.listening.push(listen("stats", (e) => onStats(e.payload)));
+  S.listening.push(listen("open-files", (e) => transcribe(e.payload)));
 }
 
 async function saveAs() {
@@ -982,7 +997,10 @@ async function start() {
   renderBusy();
 
   if (!hasModel()) openModels();
-  else if (b.pendingFiles.length) transcribe(b.pendingFiles);
+  // Только после подписки на события: иначе файл, открытый при запуске, мог пропасть.
+  await Promise.all(S.listening);
+  const pending = await invoke("ui_ready");
+  if (hasModel() && pending.length) transcribe(pending);
   if (S.settings.diarize && !S.diarizeReady && !S.downloading.has("diarization")) startDiarizeDownload();
   // Проверка обновлений — чуть позже, чтобы не мешать запуску.
   if (S.settings.checkUpdates !== false) setTimeout(() => checkUpdate(false), 3000);

@@ -9,6 +9,7 @@
 //!   open-files        — файлы, открытые через «Открыть с помощью» / двойной клик
 
 pub mod audio;
+mod cluster;
 pub mod diarize;
 pub mod engine;
 pub mod i18n;
@@ -19,6 +20,7 @@ pub mod recorder;
 mod ru_asr;
 pub mod settings;
 mod updates;
+pub mod vad;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -119,13 +121,21 @@ struct Bootstrap {
     downloading: Vec<String>,
     system: SystemInfo,
     models_dir: String,
-    pending_files: Vec<String>,
     diarize_ready: bool,
+}
+
+/// Окно подписалось на события — дальше открытые файлы идут событием
+/// «open-files». Возвращает файлы, пришедшие до этого момента (двойной клик
+/// по файлу при закрытом приложении).
+#[tauri::command]
+fn ui_ready(state: State<'_, AppState>) -> Vec<String> {
+    let mut pending = state.pending_open.lock().unwrap();
+    state.ui_ready.store(true, Ordering::Relaxed);
+    std::mem::take(&mut *pending)
 }
 
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Bootstrap {
-    state.ui_ready.store(true, Ordering::Relaxed);
     Bootstrap {
         settings: state.settings.lock().unwrap().clone(),
         catalog: models::CATALOG,
@@ -133,7 +143,6 @@ fn bootstrap(state: State<'_, AppState>) -> Bootstrap {
         downloading: state.downloads.active_ids(),
         system: state.system.clone(),
         models_dir: state.models_dir.to_string_lossy().into(),
-        pending_files: std::mem::take(&mut *state.pending_open.lock().unwrap()),
         diarize_ready: models::diarize_ready(&state.models_dir),
     }
 }
@@ -161,10 +170,10 @@ fn models_state(state: &AppState) -> ModelsState {
     }
 }
 
-/// Модели разделения по голосам: два файла, общий прогресс под id «diarization».
+/// Модель разделения по голосам (голосовые отпечатки) — под id «diarization».
 #[tauri::command]
 fn download_diarization(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    download_set(app, &state, "diarization", &[models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING], state.models_dir.clone());
+    download_set(app, &state, "diarization", &[models::DIARIZE_EMBEDDING], state.models_dir.clone());
     Ok(())
 }
 
@@ -276,9 +285,9 @@ fn delete_model(app: AppHandle, state: State<'_, AppState>, id: String) -> Resul
         return Err(tr("Дождитесь окончания расшифровки.", "Wait until the transcription finishes."));
     }
     if id == "diarization" {
-        for f in [models::DIARIZE_SEGMENTATION, models::DIARIZE_EMBEDDING] {
-            let _ = std::fs::remove_file(state.models_dir.join(f.file));
-            let _ = std::fs::remove_file(state.models_dir.join(format!("{}.part", f.file)));
+        for f in [models::DIARIZE_EMBEDDING.file, models::DIARIZE_SEGMENTATION_OLD] {
+            let _ = std::fs::remove_file(state.models_dir.join(f));
+            let _ = std::fs::remove_file(state.models_dir.join(format!("{f}.part")));
         }
         models_changed(&app);
         return Ok(());
@@ -490,9 +499,10 @@ fn run_one(
     // 2. Кто когда говорил (если включено разделение по голосам)
     let turns = if settings.diarize && models::diarize_ready(models_dir) {
         emit_job(app, JobEvent::Phase { phase: "diarizing", name: name.clone(), audio_seconds, recording: is_rec });
+        let vad = engine.lock().unwrap().vad_model().map(Path::to_path_buf);
         match diarize::diarize(
             &samples,
-            &models_dir.join(models::DIARIZE_SEGMENTATION.file),
+            vad.as_deref(),
             &models_dir.join(models::DIARIZE_EMBEDDING.file),
             settings.speakers,
             cancel,
@@ -591,10 +601,14 @@ fn open_paths(app: &AppHandle, paths: Vec<String>) {
         EARLY_OPEN.lock().unwrap().extend(paths);
         return;
     };
+    // Под тем же замком, что и ui_ready: файл не потеряется между «окно ещё
+    // не готово» и «окно уже забрало отложенные».
+    let mut pending = state.pending_open.lock().unwrap();
     if state.ui_ready.load(Ordering::Relaxed) {
+        drop(pending);
         let _ = app.emit("open-files", paths);
     } else {
-        state.pending_open.lock().unwrap().extend(paths);
+        pending.extend(paths);
     }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -686,6 +700,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            ui_ready,
             save_settings,
             list_models,
             download_model,

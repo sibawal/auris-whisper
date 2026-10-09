@@ -123,16 +123,11 @@ impl CatalogModel {
     }
 }
 
-/// Разделение по голосам: сегментация pyannote 3.0 (MIT) и голосовые отпечатки
-/// 3D-Speaker CAM++, обучены на китайской и английской речи, но голоса различают
-/// независимо от языка (Apache-2.0).
-pub const DIARIZE_SEGMENTATION: RemoteFile = RemoteFile {
-    id: "diarize-segmentation",
-    file: "pyannote-segmentation-3.0.onnx",
-    size: 5_992_913,
-    sha256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
-    url: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
-};
+/// Разделение по голосам: голосовые отпечатки 3D-Speaker CAM++, обучены на
+/// китайской и английской речи, но голоса различают независимо от языка (Apache-2.0).
+/// Модель сегментации pyannote, которую качала 2.1–2.2, больше не нужна — её файл
+/// удаляется вместе с этой моделью.
+pub const DIARIZE_SEGMENTATION_OLD: &str = "pyannote-segmentation-3.0.onnx";
 pub const DIARIZE_EMBEDDING: RemoteFile = RemoteFile {
     id: "diarize-embedding",
     file: "3dspeaker-campplus-zh-en-advanced.onnx",
@@ -146,9 +141,9 @@ pub fn files_ready(dir: &Path, files: &[RemoteFile]) -> bool {
     files.iter().all(|f| std::fs::metadata(dir.join(f.file)).map(|m| m.len() == f.size).unwrap_or(false))
 }
 
-/// Установлены ли обе модели разделения по голосам.
+/// Установлена ли модель разделения по голосам.
 pub fn diarize_ready(dir: &Path) -> bool {
-    files_ready(dir, &[DIARIZE_SEGMENTATION, DIARIZE_EMBEDDING])
+    files_ready(dir, &[DIARIZE_EMBEDDING])
 }
 
 /// Чем считать модель с таким id. Свои файлы .bin — всегда whisper.

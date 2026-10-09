@@ -1,18 +1,28 @@
-//! Разделение по голосам (диаризация).
+//! Разделение по голосам (диаризация) — по схеме 3D-Speaker:
 //!
-//! sherpa-onnx: модель pyannote находит, где кто-то говорит, голосовые отпечатки
-//! (3D-Speaker CAM++) сравнивают фрагменты между собой, кластеризация собирает
-//! их в спикеров. Потом каждому слову из whisper достаётся спикер, который
-//! говорил в этот момент, и текст режется на реплики.
+//! 1. детектор речи Silero находит, где говорят;
+//! 2. речь режется на окна по 1,5 с с шагом 0,75 с;
+//! 3. для каждого окна — голосовой отпечаток (3D-Speaker CAM++ через sherpa-onnx);
+//! 4. отпечатки группируются в спикеров (см. cluster.rs);
+//! 5. каждому слову распознанного текста достаётся спикер, который говорил
+//!    в этот момент, и текст режется на реплики.
+//!
+//! Раньше здесь был готовый конвейер sherpa-onnx (сегментация pyannote +
+//! иерархическая кластеризация «полной связи»). На живых разговорах он находил
+//! 5–11 спикеров вместо двух, а при заданном числе отдавал «второму» случайный
+//! шум — весь текст доставался одному. И был в несколько раз медленнее.
 
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use sherpa_onnx_sys as sys;
 
+use crate::audio::SAMPLE_RATE;
+use crate::cluster;
 use crate::engine::{Segment, Word};
 use crate::i18n::tr;
+use crate::vad::{self, VadOptions};
 
 /// Отрезок времени, когда говорил один спикер (секунды).
 #[derive(Clone, Debug)]
@@ -22,121 +32,255 @@ pub struct Turn {
     pub speaker: usize,
 }
 
-type ProgressCallback = unsafe extern "C" fn(i32, i32, *mut c_void) -> i32;
-
-// В C-библиотеке есть вариант с прогрессом, в Rust-привязках — нет.
-extern "C" {
-    fn SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
-        sd: *const sys::OfflineSpeakerDiarization,
-        samples: *const f32,
-        n: i32,
-        callback: Option<ProgressCallback>,
-        arg: *mut c_void,
-    ) -> *const sys::OfflineSpeakerDiarizationResult;
-}
-
-struct CallbackData<'a> {
-    progress: &'a mut dyn FnMut(f64),
-}
-
-unsafe extern "C" fn progress_trampoline(done: i32, total: i32, arg: *mut c_void) -> i32 {
-    if !arg.is_null() && total > 0 {
-        let data = &mut *(arg as *mut CallbackData);
-        (data.progress)(done as f64 / total as f64);
-    }
-    0
-}
+/// Окно для голосового отпечатка и шаг между окнами, с.
+const WINDOW: f64 = 1.5;
+const SHIFT: f64 = 0.75;
+/// Короче этого по голосу ничего не понять — такие обрывки пропускаем.
+const MIN_WINDOW: f64 = 0.5;
+/// Сколько спикеров максимум ищем сами.
+const MAX_SPEAKERS: usize = 8;
+/// Доля прогресса на поиск речи; остальное — отпечатки.
+const VAD_SHARE: f64 = 0.15;
 
 /// Находит, кто когда говорил. `speakers` — сколько людей в записи, если известно.
 pub fn diarize(
     samples: &[f32],
-    segmentation_model: &Path,
+    vad_model: Option<&Path>,
     embedding_model: &Path,
     speakers: Option<u32>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(f64),
 ) -> Result<Vec<Turn>, String> {
-    let fail = || tr("Не удалось разделить запись по голосам.", "Could not split the recording by speaker.");
-    let seg = CString::new(segmentation_model.to_string_lossy().as_bytes()).map_err(|_| fail())?;
-    let emb = CString::new(embedding_model.to_string_lossy().as_bytes()).map_err(|_| fail())?;
-    let cpu = CString::new("cpu").unwrap();
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
+    let rate = SAMPLE_RATE as f64;
+    let total = samples.len() as f64 / rate;
 
-    let config = sys::OfflineSpeakerDiarizationConfig {
-        segmentation: sys::OfflineSpeakerSegmentationModelConfig {
-            pyannote: sys::OfflineSpeakerSegmentationPyannoteModelConfig { model: seg.as_ptr(), window_shift_ratio: 0.1 },
-            num_threads: threads,
-            debug: 0,
-            provider: cpu.as_ptr(),
-        },
-        embedding: sys::SpeakerEmbeddingExtractorConfig {
-            model: emb.as_ptr(),
-            num_threads: threads,
-            debug: 0,
-            provider: cpu.as_ptr(),
-        },
-        clustering: sys::FastClusteringConfig {
-            // Число спикеров известно — кластеров ровно столько; иначе — порог похожести.
-            num_clusters: speakers.map(|n| n as i32).unwrap_or(-1),
-            threshold: 0.5,
-            compute_confidence: 0,
-        },
-        min_duration_on: 0.3,
-        min_duration_off: 0.5,
+    // 1. Где говорят. Паузы короче 0,2 с не разрывают речь: смена спикера
+    // посреди отрезка всё равно найдётся по окнам.
+    let opts = VadOptions { min_silence_ms: 200, max_speech_s: 30.0, pad_ms: 50 };
+    let spans = match vad_model {
+        Some(m) => vad::speech_spans(samples, m, &opts, cancel, &mut |p| progress(p * VAD_SHARE)),
+        None => None,
     };
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+    let spans = spans.unwrap_or_else(|| vec![(0.0, total)]);
 
-    unsafe {
-        let sd = sys::SherpaOnnxCreateOfflineSpeakerDiarization(&config);
-        if sd.is_null() {
-            return Err(tr(
-                "Модели разделения по голосам повреждены — удалите их в окне моделей и скачайте заново.",
-                "The speaker models are damaged — delete them in the models window and download again.",
-            ));
+    // 2. Окна.
+    let windows = windows(&spans);
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 3. Отпечатки.
+    let embs = embeddings(samples, &windows, embedding_model, cancel, &mut |p| {
+        progress(VAD_SHARE + (1.0 - VAD_SHARE) * p)
+    })?;
+
+    // 4. Кто есть кто.
+    let labels = cluster::cluster(&embs, speakers.map(|n| n as usize), MAX_SPEAKERS);
+
+    // 5. Окна перекрываются: граница между соседними — посередине между их центрами.
+    Ok(turns(samples, &windows, &labels))
+}
+
+/// Окно отпечатка: отрезок записи и номер отрезка речи, из которого оно взято.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Window {
+    start: f64,
+    end: f64,
+    span: usize,
+}
+
+fn windows(spans: &[(f64, f64)]) -> Vec<Window> {
+    let mut out = Vec::new();
+    for (i, &(a, b)) in spans.iter().enumerate() {
+        let len = b - a;
+        if len < MIN_WINDOW {
+            continue;
         }
-        let mut data = CallbackData { progress };
-        let result = SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
-            sd,
-            samples.as_ptr(),
-            samples.len() as i32,
-            Some(progress_trampoline),
-            &mut data as *mut CallbackData as *mut c_void,
-        );
-        sys::SherpaOnnxDestroyOfflineSpeakerDiarization(sd);
-        if cancel.load(Ordering::Relaxed) {
-            if !result.is_null() {
-                sys::SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result);
+        if len <= WINDOW {
+            out.push(Window { start: a, end: b, span: i });
+            continue;
+        }
+        let mut s = a;
+        while s + WINDOW < b {
+            out.push(Window { start: s, end: s + WINDOW, span: i });
+            s += SHIFT;
+        }
+        // Последнее окно — вплотную к концу отрезка.
+        out.push(Window { start: b - WINDOW, end: b, span: i });
+    }
+    out
+}
+
+fn turns(samples: &[f32], windows: &[Window], labels: &[usize]) -> Vec<Turn> {
+    let centre = |w: &Window| (w.start + w.end) / 2.0;
+    // Граница между соседними окнами. Тот же спикер — посередине между центрами;
+    // сменился — в самом тихом месте рядом: люди почти всегда меняются в паузе.
+    let boundary = |a: usize, b: usize| {
+        let (ca, cb) = (centre(&windows[a]), centre(&windows[b]));
+        if labels[a] == labels[b] {
+            (ca + cb) / 2.0
+        } else {
+            quietest(samples, ca - SHIFT / 2.0, cb + SHIFT / 2.0).unwrap_or((ca + cb) / 2.0)
+        }
+    };
+    let mut out: Vec<Turn> = Vec::new();
+    for (i, w) in windows.iter().enumerate() {
+        let left = match i.checked_sub(1) {
+            Some(p) if windows[p].span == w.span => boundary(p, i),
+            _ => w.start,
+        };
+        let right = match windows.get(i + 1) {
+            Some(n) if n.span == w.span => boundary(i, i + 1),
+            _ => w.end,
+        };
+        match out.last_mut() {
+            Some(t) if t.speaker == labels[i] && (left - t.end).abs() < 1e-6 => t.end = right,
+            _ => out.push(Turn { start: left, end: right, speaker: labels[i] }),
+        }
+    }
+    out
+}
+
+/// Середина самого тихого места на отрезке [from, to], с: кусочки по 20 мс,
+/// и если тишина длится дольше одного кусочка — её середина.
+fn quietest(samples: &[f32], from: f64, to: f64) -> Option<f64> {
+    let rate = SAMPLE_RATE as f64;
+    let frame = (0.02 * rate) as usize;
+    let step = (0.01 * rate) as usize;
+    let a = ((from.max(0.0) * rate) as usize).min(samples.len());
+    let b = ((to.max(0.0) * rate) as usize).min(samples.len());
+    let energy: Vec<(usize, f32)> =
+        (a..b.saturating_sub(frame)).step_by(step).map(|i| (i, samples[i..i + frame].iter().map(|x| x * x).sum())).collect();
+    let min = energy.iter().map(|e| e.1).fold(f32::MAX, f32::min);
+    let quiet = |e: f32| e <= min * 1.5 + 1e-9;
+    // Самая длинная подряд идущая тишина.
+    let (mut best, mut run_start, mut best_len) = (None, 0, 0);
+    for (k, e) in energy.iter().enumerate() {
+        if !quiet(e.1) {
+            run_start = k + 1;
+        } else if k + 1 - run_start > best_len {
+            best_len = k + 1 - run_start;
+            best = Some((run_start, k));
+        }
+    }
+    let (first, last) = best?;
+    Some(((energy[first].0 + energy[last].0 + frame) / 2) as f64 / rate)
+}
+
+/// Отпечатки окон. Окна короткие, и одна модель плохо загружает несколько ядер,
+/// поэтому работают несколько экземпляров модели, каждый в своём потоке.
+fn embeddings(
+    samples: &[f32],
+    windows: &[Window],
+    model: &Path,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<Vec<Vec<f32>>, String> {
+    let model = CString::new(model.to_string_lossy().as_bytes())
+        .map_err(|_| tr("Не удалось разделить запись по голосам.", "Could not split the recording by speaker."))?;
+    let workers = (vad::threads() as usize).clamp(1, MAX_EMBED_WORKERS).min(windows.len().div_ceil(8));
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let broken = AtomicBool::new(false);
+    let mut out: Vec<Vec<f32>> = vec![Vec::new(); windows.len()];
+
+    let results: Vec<Vec<(usize, Vec<f32>)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut got = Vec::new();
+                    let Some(ex) = Extractor::new(&model) else {
+                        broken.store(true, Ordering::Relaxed);
+                        return got;
+                    };
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= windows.len() || cancel.load(Ordering::Relaxed) || broken.load(Ordering::Relaxed) {
+                            return got;
+                        }
+                        let w = &windows[i];
+                        let rate = SAMPLE_RATE as f64;
+                        let a = ((w.start * rate) as usize).min(samples.len());
+                        let b = ((w.end * rate) as usize).min(samples.len());
+                        got.push((i, ex.embed(&samples[a..b])));
+                        done.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        while !handles.iter().all(|h| h.is_finished()) {
+            progress(done.load(Ordering::Relaxed) as f64 / windows.len() as f64);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+    if broken.load(Ordering::Relaxed) {
+        return Err(tr(
+            "Модель разделения по голосам повреждена — удалите её в окне моделей и скачайте заново.",
+            "The speaker model is damaged — delete it in the models window and download again.",
+        ));
+    }
+    for (i, v) in results.into_iter().flatten() {
+        out[i] = v;
+    }
+    progress(1.0);
+    Ok(out)
+}
+
+/// Больше стольких копий модели отпечатков не держим (каждая ~60 МБ памяти).
+const MAX_EMBED_WORKERS: usize = 4;
+
+/// Модель голосовых отпечатков (одна копия на поток).
+struct Extractor {
+    ptr: *const sys::SpeakerEmbeddingExtractor,
+    dim: usize,
+}
+
+impl Extractor {
+    fn new(model: &CString) -> Option<Self> {
+        let cpu = CString::new("cpu").unwrap();
+        let config = sys::SpeakerEmbeddingExtractorConfig { model: model.as_ptr(), num_threads: 1, debug: 0, provider: cpu.as_ptr() };
+        let ptr = unsafe { sys::SherpaOnnxCreateSpeakerEmbeddingExtractor(&config) };
+        if ptr.is_null() {
+            return None;
+        }
+        let dim = unsafe { sys::SherpaOnnxSpeakerEmbeddingExtractorDim(ptr) }.max(0) as usize;
+        Some(Self { ptr, dim })
+    }
+
+    /// Нормированный отпечаток куска записи; при сбое — нулевой вектор.
+    fn embed(&self, piece: &[f32]) -> Vec<f32> {
+        let mut v = vec![0f32; self.dim];
+        unsafe {
+            let stream = sys::SherpaOnnxSpeakerEmbeddingExtractorCreateStream(self.ptr);
+            if !stream.is_null() {
+                sys::SherpaOnnxOnlineStreamAcceptWaveform(stream, SAMPLE_RATE as i32, piece.as_ptr(), piece.len() as i32);
+                sys::SherpaOnnxOnlineStreamInputFinished(stream);
+                if sys::SherpaOnnxSpeakerEmbeddingExtractorIsReady(self.ptr, stream) != 0 {
+                    let e = sys::SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding(self.ptr, stream);
+                    if !e.is_null() {
+                        v.copy_from_slice(std::slice::from_raw_parts(e, self.dim));
+                        sys::SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(e);
+                    }
+                }
+                sys::SherpaOnnxDestroyOnlineStream(stream);
             }
-            return Err("cancelled".into());
         }
-        if result.is_null() {
-            return Err(fail());
-        }
-        let n = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result).max(0) as usize;
-        let segs = sys::SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result);
-        let mut turns = Vec::with_capacity(n);
-        if !segs.is_null() {
-            for s in std::slice::from_raw_parts(segs, n) {
-                turns.push(Turn { start: s.start as f64, end: s.end as f64, speaker: s.speaker.max(0) as usize });
-            }
-            sys::SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segs);
-        }
-        sys::SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result);
-        Ok(renumber(turns))
+        cluster::normalize(&mut v);
+        v
     }
 }
 
-/// Номера спикеров — по порядку первого появления: «Спикер 1» — тот, кто заговорил первым.
-fn renumber(mut turns: Vec<Turn>) -> Vec<Turn> {
-    let mut order: Vec<usize> = Vec::new();
-    for t in &turns {
-        if !order.contains(&t.speaker) {
-            order.push(t.speaker);
-        }
+impl Drop for Extractor {
+    fn drop(&mut self) {
+        unsafe { sys::SherpaOnnxDestroySpeakerEmbeddingExtractor(self.ptr) }
     }
-    for t in &mut turns {
-        t.speaker = order.iter().position(|&s| s == t.speaker).unwrap_or(0);
-    }
-    turns
 }
 
 /// Кто говорил в момент `t`: отрезок, который его накрывает, иначе ближайший.
@@ -313,13 +457,28 @@ mod tests {
     }
 
     #[test]
-    fn renumbers_by_first_appearance() {
-        let t = renumber(vec![
-            Turn { start: 0.0, end: 1.0, speaker: 3 },
-            Turn { start: 1.0, end: 2.0, speaker: 0 },
-            Turn { start: 2.0, end: 3.0, speaker: 3 },
-        ]);
-        assert_eq!(t.iter().map(|x| x.speaker).collect::<Vec<_>>(), vec![0, 1, 0]);
+    fn windows_cover_speech() {
+        let w = windows(&[(0.0, 0.3), (1.0, 2.0), (3.0, 6.2)]);
+        // Обрывок 0,3 с пропущен, отрезок 1 с — одно окно, 3,2 с — окна с шагом 0,75 с.
+        assert_eq!(w[0], Window { start: 1.0, end: 2.0, span: 1 });
+        assert!(w[1..].iter().all(|x| x.span == 2 && (x.end - x.start - WINDOW).abs() < 1e-9));
+        assert_eq!(w.last().unwrap().end, 6.2);
+    }
+
+    #[test]
+    fn turns_split_between_window_centres() {
+        let w = windows(&[(0.0, 3.0), (4.0, 5.0)]);
+        // Окна 0–1,5; 0,75–2,25; 1,5–3,0 и 4–5. Голос везде, кроме паузы на 1,6 с —
+        // смена спикера между 2-м и 3-м окном должна встать в неё.
+        let rate = SAMPLE_RATE as usize;
+        let mut audio: Vec<f32> = (0..5 * rate).map(|i| ((i as f32) * 0.05).sin() * 0.5).collect();
+        audio[(1.55 * rate as f64) as usize..(1.65 * rate as f64) as usize].fill(0.0);
+        let t = turns(&audio, &w, &[0, 0, 1, 1]);
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[0].start, t[0].speaker), (0.0, 0));
+        assert!((t[0].end - 1.6).abs() < 0.03, "{}", t[0].end);
+        assert_eq!((t[1].end, t[1].speaker), (3.0, 1));
+        assert_eq!((t[2].start, t[2].end, t[2].speaker), (4.0, 5.0, 1));
     }
 
     #[test]

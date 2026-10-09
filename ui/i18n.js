@@ -294,8 +294,8 @@ const MODEL_TEXT = {
   "diarization": {
     name_ru: "Разделение по голосам",
     name_en: "Speaker separation",
-    ru: "Определяет, кто что сказал, и подписывает реплики. Считается на процессоре, ~34 МБ.",
-    en: "Works out who said what and labels each line. Runs on the CPU, ~34 MB.",
+    ru: "Определяет, кто что сказал, и подписывает реплики. Считается на процессоре, ~28 МБ.",
+    en: "Works out who said what and labels each line. Runs on the CPU, ~28 MB.",
   },
   "large-v3": {
     name: "Large v3",
